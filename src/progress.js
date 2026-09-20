@@ -39,7 +39,7 @@ export function defaultProgress(now) {
     benchmark: [],
     sessions: [],
     lastBackup: null,
-    settings: { sound: false, sessionMin: 5 },
+    settings: { sound: false, sessionMin: 5, autoNext: true },
   };
 }
 

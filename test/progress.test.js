@@ -140,3 +140,8 @@ test('backup reminder shows after 7 days, and not for a brand-new user', () => {
   assert.equal(backupIsStale(trained, NOW + 8 * DAY_MS), true);
   assert.equal(backupIsStale({ ...trained, lastBackup: NOW + 5 * DAY_MS }, NOW + 8 * DAY_MS), false);
 });
+
+test('older saves gain new settings with their defaults and keep the ones they had', () => {
+  const p = migrate({ schema: 1, settings: { sound: true, sessionMin: 3 } }, NOW);
+  assert.deepEqual(p.settings, { sound: true, sessionMin: 3, autoNext: true });
+});

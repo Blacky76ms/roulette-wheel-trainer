@@ -15,7 +15,9 @@ import { createWheel } from './renderer.js';
 import { h, numberChip, renderParts, formatClock, percent, STAGES, PLAYABLE_STAGES } from './ui.js';
 
 const SESSION_LENGTHS = [3, 5, 10];
-const CORRECT_PAUSE_MS = 1100;
+const CORRECT_PAUSE_MS = 2200;
+// After a miss nothing advances by itself, and Next ignores taps briefly so a double-tap cannot skip the answer.
+const MISS_NEXT_GUARD_MS = 1200;
 const WEAK_SPOT_LIMIT = 5;
 const BENCHMARK_TREND_COUNT = 8;
 const BENCHMARK_REVEAL_MS = 700;
@@ -242,8 +244,15 @@ function showQuestion(item, question) {
   const answers = h('div', { class: 'answers' });
   const shownAt = performance.now();
   let answered = false;
+  let nextArmed = false;
+  let advanced = false;
 
-  function advance() { clearInterval(tick); nextQuestion(); }
+  function advance() {
+    if (advanced) return;
+    advanced = true;
+    clearInterval(tick);
+    nextQuestion();
+  }
 
   function submit(given) {
     if (answered) return;
@@ -263,9 +272,13 @@ function showQuestion(item, question) {
     wheel.present({ highlight: question.feedback.highlight, wrong: wrongPick, band: question.wheel.band });
     feedback.className = `feedback ${ok ? 'is-ok' : 'is-miss'}`;
     feedback.replaceChildren(h('strong', {}, ok ? '✓ ' : 'Not quite. Let’s lock this one in. '), ...renderParts(question.feedback.relation));
-    answers.replaceChildren(h('button', { class: 'btn btn-wide', onClick: advance }, 'Next'));
+    const next = h('button', { class: 'btn btn-wide', disabled: !ok, onClick: advance }, 'Next');
+    answers.className = 'answers';
+    answers.replaceChildren(next);
     statBar.replaceChildren(...statParts());
-    if (ok) setTimeout(() => answered && root.contains(answers) && advance(), CORRECT_PAUSE_MS);
+    if (!ok) setTimeout(() => { next.disabled = false; nextArmed = true; }, MISS_NEXT_GUARD_MS);
+    else if (progress.settings.autoNext) setTimeout(() => root.contains(answers) && advance(), CORRECT_PAUSE_MS);
+    nextArmed = ok;
   }
 
   let pad = null;
@@ -304,7 +317,7 @@ function showQuestion(item, question) {
     feedback, answers));
 
   onKeys((event) => {
-    if (answered) { if (event.key === ' ' || event.key === 'Enter') { event.preventDefault(); advance(); } return; }
+    if (answered) { if (nextArmed && (event.key === ' ' || event.key === 'Enter')) { event.preventDefault(); advance(); } return; }
     if (pad) {
       if (/^\d$/.test(event.key)) pad.press(event.key);
       else if (event.key === 'Enter') pad.press('OK');
@@ -416,6 +429,8 @@ function showSettings() {
   show(h('main', { class: 'screen settings' }, h('h1', {}, 'Settings'),
     h('button', { class: 'btn btn-ghost btn-wide', onClick: () => { commit({ ...progress, settings: { ...progress.settings, sound: !progress.settings.sound } }); showSettings(); } },
       `Sound: ${progress.settings.sound ? 'ON' : 'OFF'}`),
+    h('button', { class: 'btn btn-ghost btn-wide', onClick: () => { commit({ ...progress, settings: { ...progress.settings, autoNext: !progress.settings.autoNext } }); showSettings(); } },
+      `After a correct answer: ${progress.settings.autoNext ? 'continue automatically' : 'wait for Next'}`),
     h('button', { class: 'btn btn-ghost btn-wide', onClick: () => saveBackup(showSettings) }, 'Export progress'),
     importButton('Import progress', 'btn-ghost btn-wide'),
     h('button', { class: 'btn btn-danger btn-wide', onClick: () => { confirmBox.hidden = false; } }, 'Reset Progress'),
