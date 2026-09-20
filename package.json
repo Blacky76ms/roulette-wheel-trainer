@@ -1,0 +1,12 @@
+{
+  "name": "roulette-wheel-trainer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Visual-memory trainer for the European roulette wheel. Educational; no gambling functionality.",
+  "scripts": {
+    "test": "node --test test/",
+    "build": "node scripts/build.mjs",
+    "serve": "node scripts/serve.mjs"
+  }
+}
