@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
 // Dependency order. Modules use only named imports/exports, so stripping them is safe.
-const MODULES = ['wheel', 'scheduler', 'items', 'questions', 'progress', 'storage', 'renderer', 'ui', 'app'];
+const MODULES = ['wheel', 'scheduler', 'items', 'questions', 'benchmark', 'progress', 'storage', 'renderer', 'ui', 'app'];
 
 function bundle() {
   const seen = new Map();

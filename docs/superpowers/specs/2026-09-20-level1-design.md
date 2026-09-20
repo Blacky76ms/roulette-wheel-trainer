@@ -22,7 +22,7 @@ Educational visual-memory trainer. No gambling functionality of any kind; color 
 
 ## Milestones
 - **M1 (built):** wheel+renderer, Stages 1–3, scheduler, persistence/export/import, PWA shell, XP/streak, settings.
-- **M2:** Stages 4–6, Blank Wheel benchmark + history, full summary/progress bars.
+- **M2 (built 2026-09-20):** Stages 4–6, Blank Wheel benchmark + history, mastery bars; page is network-first, assets cache-first.
 - **M3:** Stages 7–8, reaction-time display + fast bonus, sound, R-repeat, polish.
 
 ## Success / kill

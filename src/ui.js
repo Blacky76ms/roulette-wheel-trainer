@@ -6,13 +6,13 @@ export const STAGES = Object.freeze([
   { n: 1, title: 'Explore', note: 'Drag the wheel, tap numbers' },
   { n: 2, title: 'Sectors', note: 'Voisins · Tiers · Orphelins' },
   { n: 3, title: 'Arcs', note: 'Nine arcs, both directions' },
-  { n: 4, title: 'Junctions & full ring', note: 'Coming in the next update' },
-  { n: 5, title: 'Distance', note: 'Coming in the next update' },
-  { n: 6, title: 'Position', note: 'Coming in the next update' },
+  { n: 4, title: 'Junctions & full ring', note: 'Arc boundaries and chains' },
+  { n: 5, title: 'Distance', note: 'Pockets apart, both directions' },
+  { n: 6, title: 'Position', note: 'Blank wheel, one anchor' },
   { n: 7, title: 'Segment recognition', note: 'Coming later' },
   { n: 8, title: 'Slow rotation', note: 'Coming later' },
 ]);
-export const PLAYABLE_STAGES = Object.freeze([1, 2, 3]);
+export const PLAYABLE_STAGES = Object.freeze([1, 2, 3, 4, 5, 6]);
 
 export function h(tag, props = {}, ...children) {
   const node = document.createElement(tag);

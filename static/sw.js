@@ -15,6 +15,11 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET' || new URL(event.request.url).origin !== self.location.origin) return;
-  event.respondWith(caches.match(event.request, { ignoreSearch: true })
-    .then((cached) => cached ?? fetch(event.request)));
+  const fromCache = () => caches.match(event.request, { ignoreSearch: true });
+  // The page itself is self-contained, so taking the newest copy when online can never mix versions.
+  if (event.request.mode === 'navigate') {
+    event.respondWith(fetch(event.request).catch(() => fromCache().then((cached) => cached ?? caches.match('./index.html'))));
+    return;
+  }
+  event.respondWith(fromCache().then((cached) => cached ?? fetch(event.request)));
 });

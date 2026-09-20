@@ -3,7 +3,7 @@
 // Prompt parts are strings or tokens: { n } number chip, { dir } direction badge, { sector } label.
 
 import {
-  SEQUENCE, SECTORS, MAIN_SECTORS, pocket, arcById, shortestDistance,
+  SEQUENCE, SECTORS, MAIN_SECTORS, DIRECTIONS, pocket, arcById, shortestDistance, step,
 } from './wheel.js';
 
 const NEAR_MAX = 4;
@@ -138,7 +138,98 @@ function arcCompleteQuestion(item, { recall, rng }) {
   };
 }
 
+const between = (rng, min, max) => min + Math.floor(rng() * (max - min + 1));
+const walk = (from, count, dir) => Array.from({ length: count }, (_, i) => step(from, i + 1, dir));
+const joined = (numbers, glue) => numbers.flatMap((n, i) => (i ? [glue, { n }] : [{ n }]));
+
+function chainQuestion(item, { recall, rng }) {
+  const answer = walk(item.n, between(rng, 2, 5), item.dir);
+  const options = recall ? null : shuffled([answer, ...sequenceDistractors(answer, item.n, rng)], rng)
+    .map((value) => ({ value, label: joined(value, ' ') }));
+  const ring = item.dir === 'CW' ? [item.n, ...answer] : [...answer].reverse().concat(item.n);
+  return {
+    answer,
+    answerType: recall ? 'sequence' : 'choice',
+    options,
+    prompt: ['Continue ', { dir: item.dir }, ' from ', { n: item.n }, ` · ${answer.length} numbers`],
+    wheel: { view: 'arc', focus: item.n, revealed: [item.n], band: [], unknown: [] },
+    feedback: { highlight: ring, relation: joined(ring, item.dir === 'CW' ? ' → ' : ' ← ') },
+  };
+}
+
+function distStepQuestion(item, { recall, rng }) {
+  const k = item.band === 'near' ? between(rng, 2, 4) : between(rng, 5, 9);
+  const path = walk(item.n, k, item.dir);
+  const answer = path.at(-1);
+  const base = {
+    prompt: [`${k} pockets `, { dir: item.dir }, ' of ', { n: item.n }],
+    wheel: { view: 'full', focus: item.n, revealed: [item.n], band: [], unknown: [answer] },
+    feedback: { highlight: [item.n, ...path], relation: [{ n: item.n }, ` +${k} `, { dir: item.dir }, ' · ', { n: answer }] },
+  };
+  return numberQuestion(base, { answer, exclude: [item.n], recall, rng });
+}
+
+const DISTANCE_MIN = 2;
+const DISTANCE_MAX = 9;
+const distanceOption = (k, dir) => ({ value: `${k}:${dir}`, label: [`${k} `, { dir }] });
+
+function distCountQuestion(item, { recall, rng }) {
+  const k = between(rng, DISTANCE_MIN, DISTANCE_MAX);
+  const dir = DIRECTIONS[between(rng, 0, 1)];
+  const other = dir === 'CW' ? 'CCW' : 'CW';
+  const target = step(item.n, k, dir);
+  const range = Array.from({ length: DISTANCE_MAX - DISTANCE_MIN + 1 }, (_, i) => i + DISTANCE_MIN);
+  const all = DIRECTIONS.flatMap((d) => range.map((n) => distanceOption(n, d)));
+  const wrongK = k === DISTANCE_MAX ? k - 1 : k + 1;
+  const few = shuffled([distanceOption(k, dir), distanceOption(k, other), distanceOption(wrongK, dir), distanceOption(wrongK, other)], rng);
+  return {
+    answer: `${k}:${dir}`,
+    answerType: 'choice',
+    options: recall ? all : few,
+    prompt: ['From ', { n: item.n }, ' to ', { n: target }, ': pockets, shorter way?'],
+    wheel: { view: 'full', focus: item.n, revealed: [item.n], band: [], unknown: [] },
+    feedback: { highlight: [item.n, ...walk(item.n, k, dir)], relation: [{ n: item.n }, ` +${k} `, { dir }, ' · ', { n: target }] },
+  };
+}
+
+const NEIGHBOR_SPAN = 4;
+const NEIGHBOR_DECOYS = 6;
+
+function neighborsQuestion(item, { rng }) {
+  const answer = [...walk(item.n, NEIGHBOR_SPAN, 'CCW').reverse(), ...walk(item.n, NEIGHBOR_SPAN, 'CW')];
+  const outer = DIRECTIONS.flatMap((d) => walk(item.n, NEIGHBOR_SPAN * 2, d).slice(NEIGHBOR_SPAN));
+  const decoys = shuffled(outer, rng).slice(0, NEIGHBOR_DECOYS);
+  return {
+    answer,
+    answerType: 'multi',
+    options: shuffled([...answer, ...decoys], rng).map((value) => ({ value, label: [{ n: value }] })),
+    prompt: ['Select the ±4 neighbors of ', { n: item.n }],
+    wheel: { view: 'arc', focus: item.n, revealed: [item.n], band: [], unknown: [] },
+    feedback: { highlight: [...answer, item.n], relation: joined([...answer.slice(0, 4), item.n, ...answer.slice(4)], ' ') },
+  };
+}
+
+function positionQuestion(item, { rng }) {
+  const anchor = step(item.n, between(rng, 3, 12), DIRECTIONS[between(rng, 0, 1)]);
+  const naming = item.kind === 'posName';
+  return {
+    answer: item.n,
+    answerType: naming ? 'keypad' : 'tap',
+    options: null,
+    prompt: naming ? ['Which number is here?'] : ['Tap the pocket of ', { n: item.n }],
+    wheel: { view: 'full', focus: item.n, revealed: [anchor], band: [], unknown: naming ? [item.n] : [] },
+    feedback: { highlight: [item.n], relation: [{ n: anchor }, ' … ', { n: item.n }] },
+  };
+}
+
 const BUILDERS = {
+  junctionStep: arcStepQuestion,
+  chain: chainQuestion,
+  distStep: distStepQuestion,
+  distCount: distCountQuestion,
+  neighbors: neighborsQuestion,
+  posName: positionQuestion,
+  posTap: positionQuestion,
   sectorMember: sectorMemberQuestion,
   sectorEdge: sectorEdgeQuestion,
   arcStep: arcStepQuestion,
@@ -153,6 +244,10 @@ export function buildQuestion(item, { recall, rng }) {
 }
 
 export function isCorrectAnswer(question, given) {
+  if (question.answerType === 'multi') {
+    return Array.isArray(given) && given.length === question.answer.length
+      && question.answer.every((n) => given.includes(n));
+  }
   if (Array.isArray(question.answer)) {
     return Array.isArray(given)
       && given.length === question.answer.length

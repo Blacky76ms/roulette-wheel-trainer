@@ -104,3 +104,20 @@ button { font: inherit; color: inherit; cursor: pointer; touch-action: manipulat
 .settings { gap: 10px; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* M2: multi-select, 16-way distance grid, tap hint, benchmark */
+.hint { margin: 0; text-align: center; color: var(--muted); font-size: 14px; }
+.answers.grid-4 { grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.answers.grid-4 .choice { min-height: 46px; font-size: 14px; padding: 0 4px; flex-direction: column; gap: 0; }
+.answers.grid-4 .choice kbd { display: none; }
+.answers.grid-4 .dir { border: 0; padding: 0; }
+.pick-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.pick { min-height: 48px; padding: 0; font-size: 18px; }
+.pick[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); background: var(--surface-2); }
+.btn:disabled { opacity: .45; cursor: default; }
+.benchmark-row { border-style: dashed; }
+.tiles.two { grid-template-columns: 1fr 1fr; } .tiles.two strong { font-size: 34px; }
+.trend { display: flex; align-items: flex-end; gap: 8px; height: 96px; }
+.trend-col { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 4px; }
+.trend-col i { display: block; width: 100%; height: 72px; background: var(--accent); border-radius: 4px 4px 0 0; transform-origin: bottom; }
+.trend-col small { font-family: var(--mono); color: var(--muted); }

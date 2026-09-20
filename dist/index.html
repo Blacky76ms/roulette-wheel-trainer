@@ -118,6 +118,23 @@ button { font: inherit; color: inherit; cursor: pointer; touch-action: manipulat
 .settings { gap: 10px; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* M2: multi-select, 16-way distance grid, tap hint, benchmark */
+.hint { margin: 0; text-align: center; color: var(--muted); font-size: 14px; }
+.answers.grid-4 { grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.answers.grid-4 .choice { min-height: 46px; font-size: 14px; padding: 0 4px; flex-direction: column; gap: 0; }
+.answers.grid-4 .choice kbd { display: none; }
+.answers.grid-4 .dir { border: 0; padding: 0; }
+.pick-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.pick { min-height: 48px; padding: 0; font-size: 18px; }
+.pick[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); background: var(--surface-2); }
+.btn:disabled { opacity: .45; cursor: default; }
+.benchmark-row { border-style: dashed; }
+.tiles.two { grid-template-columns: 1fr 1fr; } .tiles.two strong { font-size: 34px; }
+.trend { display: flex; align-items: flex-end; gap: 8px; height: 96px; }
+.trend-col { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 4px; }
+.trend-col i { display: block; width: 100%; height: 72px; background: var(--accent); border-radius: 4px 4px 0 0; transform-origin: bottom; }
+.trend-col small { font-family: var(--mono); color: var(--muted); }
 </style>
 </head>
 <body>
@@ -348,10 +365,49 @@ function arcItems(arc) {
   return [...steps, ...missing, ...complete];
 }
 
+function junctionItems() {
+  return JUNCTIONS.flatMap((j) => [
+    { id: `js:${j.from}>${j.to}`, kind: 'junctionStep', dir: 'CW', from: j.from, to: j.to },
+    { id: `js:${j.to}>${j.from}`, kind: 'junctionStep', dir: 'CCW', from: j.to, to: j.from },
+  ]);
+}
+
+// Chains start at the junctions (where arcs must fuse), then everywhere else.
+function chainItems() {
+  const junctionFirst = [...new Set([...JUNCTIONS.map((j) => j.from), ...SEQUENCE])];
+  return junctionFirst.flatMap((n) => DIRECTIONS.map((dir) => ({ id: `ch:${n}:${dir}`, kind: 'chain', dir, n })));
+}
+
+function distanceItems() {
+  const steps = ['near', 'far'].flatMap((band) => SEQUENCE.flatMap((n) => DIRECTIONS.map((dir) => (
+    { id: `ds:${n}:${dir}:${band}`, kind: 'distStep', dir, n, band }))));
+  const counts = SEQUENCE.map((n) => ({ id: `dc:${n}`, kind: 'distCount', dir: null, n }));
+  const around = SEQUENCE.map((n) => ({ id: `nb:${n}`, kind: 'neighbors', dir: null, n }));
+  const nearCount = SEQUENCE.length * DIRECTIONS.length;
+  return [...interleave([steps.slice(0, nearCount), counts, around]), ...steps.slice(nearCount)];
+}
+
+function positionItems() {
+  return interleave([
+    SEQUENCE.map((n) => ({ id: `pn:${n}`, kind: 'posName', dir: null, n })),
+    SEQUENCE.map((n) => ({ id: `pt:${n}`, kind: 'posTap', dir: null, n })),
+  ]);
+}
+
 const CATALOG = Object.freeze({
   2: Object.freeze([...sectorMemberItems(), ...sectorEdgeItems()]),
   3: Object.freeze(ARCS.flatMap(arcItems)),
+  4: Object.freeze([...junctionItems(), ...chainItems()]),
+  5: Object.freeze(distanceItems()),
+  6: Object.freeze(positionItems()),
 });
+
+const DISTANCE_KINDS = Object.freeze(['distStep', 'distCount', 'neighbors']);
+const SPATIAL_KINDS = Object.freeze(['posName', 'posTap']);
+
+function allItems() {
+  return Object.values(CATALOG).flat();
+}
 
 const BY_ID = new Map(Object.values(CATALOG).flat().map((item) => [item.id, item]));
 
@@ -368,11 +424,18 @@ function itemLabel(item) {
     case 'sectorMember': return `${item.n} · sector`;
     case 'sectorEdge': return `${SECTORS[item.sector].short} · ${item.edge} ${item.dir}`;
     // Written in ring order, so a CCW step from 13 to 27 reads "27 ← 13".
+    case 'junctionStep':
     case 'arcStep': return item.dir === 'CW'
       ? `${item.from} ${ARROW.CW} ${item.to}`
       : `${item.to} ${ARROW.CCW} ${item.from}`;
     case 'arcMissing': return `${item.n} · in arc ${pocket(item.n).arc}`;
     case 'arcComplete': return `Arc ${item.arc} · ${item.dir}`;
+    case 'chain': return `Chain from ${item.n} ${item.dir}`;
+    case 'distStep': return `${item.n} · ${item.band} ${item.dir}`;
+    case 'distCount': return `Distance from ${item.n}`;
+    case 'neighbors': return `±4 of ${item.n}`;
+    case 'posName': return `Name pocket ${item.n}`;
+    case 'posTap': return `Find pocket ${item.n}`;
     default: return item.id;
   }
 }
@@ -515,7 +578,98 @@ function arcCompleteQuestion(item, { recall, rng }) {
   };
 }
 
+const between = (rng, min, max) => min + Math.floor(rng() * (max - min + 1));
+const walk = (from, count, dir) => Array.from({ length: count }, (_, i) => step(from, i + 1, dir));
+const joined = (numbers, glue) => numbers.flatMap((n, i) => (i ? [glue, { n }] : [{ n }]));
+
+function chainQuestion(item, { recall, rng }) {
+  const answer = walk(item.n, between(rng, 2, 5), item.dir);
+  const options = recall ? null : shuffled([answer, ...sequenceDistractors(answer, item.n, rng)], rng)
+    .map((value) => ({ value, label: joined(value, ' ') }));
+  const ring = item.dir === 'CW' ? [item.n, ...answer] : [...answer].reverse().concat(item.n);
+  return {
+    answer,
+    answerType: recall ? 'sequence' : 'choice',
+    options,
+    prompt: ['Continue ', { dir: item.dir }, ' from ', { n: item.n }, ` · ${answer.length} numbers`],
+    wheel: { view: 'arc', focus: item.n, revealed: [item.n], band: [], unknown: [] },
+    feedback: { highlight: ring, relation: joined(ring, item.dir === 'CW' ? ' → ' : ' ← ') },
+  };
+}
+
+function distStepQuestion(item, { recall, rng }) {
+  const k = item.band === 'near' ? between(rng, 2, 4) : between(rng, 5, 9);
+  const path = walk(item.n, k, item.dir);
+  const answer = path.at(-1);
+  const base = {
+    prompt: [`${k} pockets `, { dir: item.dir }, ' of ', { n: item.n }],
+    wheel: { view: 'full', focus: item.n, revealed: [item.n], band: [], unknown: [answer] },
+    feedback: { highlight: [item.n, ...path], relation: [{ n: item.n }, ` +${k} `, { dir: item.dir }, ' · ', { n: answer }] },
+  };
+  return numberQuestion(base, { answer, exclude: [item.n], recall, rng });
+}
+
+const DISTANCE_MIN = 2;
+const DISTANCE_MAX = 9;
+const distanceOption = (k, dir) => ({ value: `${k}:${dir}`, label: [`${k} `, { dir }] });
+
+function distCountQuestion(item, { recall, rng }) {
+  const k = between(rng, DISTANCE_MIN, DISTANCE_MAX);
+  const dir = DIRECTIONS[between(rng, 0, 1)];
+  const other = dir === 'CW' ? 'CCW' : 'CW';
+  const target = step(item.n, k, dir);
+  const range = Array.from({ length: DISTANCE_MAX - DISTANCE_MIN + 1 }, (_, i) => i + DISTANCE_MIN);
+  const all = DIRECTIONS.flatMap((d) => range.map((n) => distanceOption(n, d)));
+  const wrongK = k === DISTANCE_MAX ? k - 1 : k + 1;
+  const few = shuffled([distanceOption(k, dir), distanceOption(k, other), distanceOption(wrongK, dir), distanceOption(wrongK, other)], rng);
+  return {
+    answer: `${k}:${dir}`,
+    answerType: 'choice',
+    options: recall ? all : few,
+    prompt: ['From ', { n: item.n }, ' to ', { n: target }, ': pockets, shorter way?'],
+    wheel: { view: 'full', focus: item.n, revealed: [item.n], band: [], unknown: [] },
+    feedback: { highlight: [item.n, ...walk(item.n, k, dir)], relation: [{ n: item.n }, ` +${k} `, { dir }, ' · ', { n: target }] },
+  };
+}
+
+const NEIGHBOR_SPAN = 4;
+const NEIGHBOR_DECOYS = 6;
+
+function neighborsQuestion(item, { rng }) {
+  const answer = [...walk(item.n, NEIGHBOR_SPAN, 'CCW').reverse(), ...walk(item.n, NEIGHBOR_SPAN, 'CW')];
+  const outer = DIRECTIONS.flatMap((d) => walk(item.n, NEIGHBOR_SPAN * 2, d).slice(NEIGHBOR_SPAN));
+  const decoys = shuffled(outer, rng).slice(0, NEIGHBOR_DECOYS);
+  return {
+    answer,
+    answerType: 'multi',
+    options: shuffled([...answer, ...decoys], rng).map((value) => ({ value, label: [{ n: value }] })),
+    prompt: ['Select the ±4 neighbors of ', { n: item.n }],
+    wheel: { view: 'arc', focus: item.n, revealed: [item.n], band: [], unknown: [] },
+    feedback: { highlight: [...answer, item.n], relation: joined([...answer.slice(0, 4), item.n, ...answer.slice(4)], ' ') },
+  };
+}
+
+function positionQuestion(item, { rng }) {
+  const anchor = step(item.n, between(rng, 3, 12), DIRECTIONS[between(rng, 0, 1)]);
+  const naming = item.kind === 'posName';
+  return {
+    answer: item.n,
+    answerType: naming ? 'keypad' : 'tap',
+    options: null,
+    prompt: naming ? ['Which number is here?'] : ['Tap the pocket of ', { n: item.n }],
+    wheel: { view: 'full', focus: item.n, revealed: [anchor], band: [], unknown: naming ? [item.n] : [] },
+    feedback: { highlight: [item.n], relation: [{ n: anchor }, ' … ', { n: item.n }] },
+  };
+}
+
 const BUILDERS = {
+  junctionStep: arcStepQuestion,
+  chain: chainQuestion,
+  distStep: distStepQuestion,
+  distCount: distCountQuestion,
+  neighbors: neighborsQuestion,
+  posName: positionQuestion,
+  posTap: positionQuestion,
   sectorMember: sectorMemberQuestion,
   sectorEdge: sectorEdgeQuestion,
   arcStep: arcStepQuestion,
@@ -530,12 +684,25 @@ function buildQuestion(item, { recall, rng }) {
 }
 
 function isCorrectAnswer(question, given) {
+  if (question.answerType === 'multi') {
+    return Array.isArray(given) && given.length === question.answer.length
+      && question.answer.every((n) => given.includes(n));
+  }
   if (Array.isArray(question.answer)) {
     return Array.isArray(given)
       && given.length === question.answer.length
       && given.every((n, i) => n === question.answer[i]);
   }
   return given === question.answer;
+}
+
+// ---- benchmark.js ----
+// Blank Wheel benchmark: one anchor is given, every other number is placed once, in random order.
+
+
+function benchmarkOrder(rng) {
+  const anchor = SEQUENCE[Math.floor(rng() * SEQUENCE.length)];
+  return { anchor, order: shuffled(SEQUENCE.filter((n) => n !== anchor), rng) };
 }
 
 // ---- progress.js ----
@@ -672,6 +839,46 @@ function unlockStage(progress, stage) {
 
 function recordSession(progress, session) {
   return { ...progress, sessions: [...progress.sessions, session].slice(-SESSIONS_KEPT) };
+}
+
+const BENCHMARK_FROM_STAGE = 4;
+const BENCHMARK_MASTERY_ERRORS = 2;
+const BENCHMARKS_KEPT = 100;
+const MASTERED_BOX = 4;
+
+function benchmarkAvailable(progress) {
+  return progress.unlocked.includes(BENCHMARK_FROM_STAGE);
+}
+
+function recordBenchmark(progress, result) {
+  return { ...progress, benchmark: [...progress.benchmark, result].slice(-BENCHMARKS_KEPT) };
+}
+
+function benchmarkBest(progress) {
+  return [...progress.benchmark].sort((a, b) => a.errors - b.errors || a.ms - b.ms)[0] ?? null;
+}
+
+function level1Mastered(progress) {
+  const best = benchmarkBest(progress);
+  return best !== null && best.errors <= BENCHMARK_MASTERY_ERRORS && progress.completed.includes(STAGE_COUNT);
+}
+
+function kindAccuracy(progress, kindList) {
+  const states = Object.entries(progress.items).filter(([id]) => kindList.includes(itemById(id)?.kind)).map(([, s]) => s);
+  const attempts = states.reduce((sum, s) => sum + s.attempts, 0);
+  return attempts === 0 ? 0 : states.reduce((sum, s) => sum + s.correct, 0) / attempts;
+}
+
+function masteryBars(progress) {
+  const dirRatio = (stat) => (stat.attempts === 0 ? 0 : stat.correct / stat.attempts);
+  const mastered = Object.values(progress.items).filter((s) => s.box >= MASTERED_BOX).length;
+  return [
+    { label: 'Wheel mastery', value: mastered / allItems().length },
+    { label: 'CW recognition', value: dirRatio(progress.dirStats.CW) },
+    { label: 'CCW recognition', value: dirRatio(progress.dirStats.CCW) },
+    { label: 'Distance', value: kindAccuracy(progress, DISTANCE_KINDS) },
+    { label: 'Spatial recognition', value: kindAccuracy(progress, SPATIAL_KINDS) },
+  ];
 }
 
 function serialize(progress, now) {
@@ -945,13 +1152,13 @@ const STAGES = Object.freeze([
   { n: 1, title: 'Explore', note: 'Drag the wheel, tap numbers' },
   { n: 2, title: 'Sectors', note: 'Voisins · Tiers · Orphelins' },
   { n: 3, title: 'Arcs', note: 'Nine arcs, both directions' },
-  { n: 4, title: 'Junctions & full ring', note: 'Coming in the next update' },
-  { n: 5, title: 'Distance', note: 'Coming in the next update' },
-  { n: 6, title: 'Position', note: 'Coming in the next update' },
+  { n: 4, title: 'Junctions & full ring', note: 'Arc boundaries and chains' },
+  { n: 5, title: 'Distance', note: 'Pockets apart, both directions' },
+  { n: 6, title: 'Position', note: 'Blank wheel, one anchor' },
   { n: 7, title: 'Segment recognition', note: 'Coming later' },
   { n: 8, title: 'Slow rotation', note: 'Coming later' },
 ]);
-const PLAYABLE_STAGES = Object.freeze([1, 2, 3]);
+const PLAYABLE_STAGES = Object.freeze([1, 2, 3, 4, 5, 6]);
 
 function h(tag, props = {}, ...children) {
   const node = document.createElement(tag);
@@ -1003,6 +1210,8 @@ function percent(ratio) {
 const SESSION_LENGTHS = [3, 5, 10];
 const CORRECT_PAUSE_MS = 1100;
 const WEAK_SPOT_LIMIT = 5;
+const BENCHMARK_TREND_COUNT = 8;
+const BENCHMARK_REVEAL_MS = 700;
 const root = document.getElementById('app');
 
 let progress = null;
@@ -1071,6 +1280,16 @@ function stageRow(stage) {
     h('span', { class: 'stage-acc' }, accuracy));
 }
 
+function benchmarkRow() {
+  const open = benchmarkAvailable(progress);
+  const best = benchmarkBest(progress);
+  const note = best ? `Best: ${best.errors} error${best.errors === 1 ? '' : 's'} · ${formatClock(best.ms)}` : 'Place all 37 numbers. Opens with stage 4.';
+  return h('button', { class: 'stage-row benchmark-row', disabled: !open, onClick: showBenchmark },
+    h('span', { class: 'stage-n' }, open ? '◎' : '🔒'),
+    h('span', { class: 'stage-text' }, h('strong', {}, 'Blank Wheel benchmark'), h('small', {}, note)),
+    h('span', { class: 'stage-acc' }, progress.benchmark.length ? `${progress.benchmark.length}×` : ''));
+}
+
 function showHome(message) {
   const lengths = h('div', { class: 'segmented', role: 'group', 'aria-label': 'Session length' },
     SESSION_LENGTHS.map((min) => h('button', { class: progress.settings.sessionMin === min ? 'is-on' : '',
@@ -1084,6 +1303,7 @@ function showHome(message) {
       importButton('Import progress', 'btn-ghost')),
     h('div', { class: 'stat-line' }, h('span', {}, `${progress.xp} XP`), progress.streak > 1 && h('span', {}, `🔥 STREAK ${progress.streak}`)),
     h('section', { class: 'stage-list' }, STAGES.map(stageRow)),
+    benchmarkRow(),
     h('div', { class: 'home-foot' }, h('span', { class: 'label' }, 'Session'), lengths,
       h('button', { class: 'btn btn-ghost', onClick: showSettings }, 'Settings'))));
 }
@@ -1172,7 +1392,7 @@ function keypad(question, submit) {
 
 function showQuestion(item, question) {
   const mount = h('div', { class: 'wheel-mount' });
-  const wheel = createWheel(mount, {});
+  const wheel = createWheel(mount, { onTap: (n) => question.answerType === 'tap' && submit(n) });
   wheel.setRotorAngle(randomRotorAngle(Math.random));
   wheel.setView(question.wheel.view, question.wheel.focus);
   wheel.present({ hideNumbers: true, ...question.wheel });
@@ -1210,8 +1430,24 @@ function showQuestion(item, question) {
   }
 
   let pad = null;
-  if (question.answerType === 'choice') {
-    answers.classList.add(question.options.length === 3 || Array.isArray(question.answer) ? 'stack' : 'grid');
+  if (question.answerType === 'tap') {
+    answers.append(h('p', { class: 'hint' }, 'Tap the wheel.'));
+  } else if (question.answerType === 'multi') {
+    const picked = new Set();
+    const confirm = h('button', { class: 'btn btn-wide', disabled: true, onClick: () => submit([...picked]) }, 'Check');
+    const chips = question.options.map((o) => {
+      const button = h('button', { class: 'btn choice pick', 'aria-pressed': 'false', onClick: () => {
+        if (picked.has(o.value)) picked.delete(o.value); else picked.add(o.value);
+        button.setAttribute('aria-pressed', String(picked.has(o.value)));
+        confirm.disabled = picked.size !== question.answer.length;
+        confirm.textContent = `Check (${picked.size}/${question.answer.length})`;
+      } }, ...renderParts(o.label));
+      return button;
+    });
+    answers.append(h('div', { class: 'pick-grid' }, chips), confirm);
+  } else if (question.answerType === 'choice') {
+    const layout = question.options.length > 4 ? 'grid-4' : question.options.length === 3 || Array.isArray(question.answer) ? 'stack' : 'grid';
+    answers.classList.add(layout);
     answers.append(...question.options.map((o, i) => h('button', { class: 'btn choice', onClick: () => submit(o.value) },
       h('kbd', {}, i + 1), ...renderParts(o.label))));
   } else {
@@ -1234,7 +1470,7 @@ function showQuestion(item, question) {
       if (/^\d$/.test(event.key)) pad.press(event.key);
       else if (event.key === 'Enter') pad.press('OK');
       else if (event.key === 'Backspace') pad.press('⌫');
-    } else if (/^[1-4]$/.test(event.key) && question.options[event.key - 1]) submit(question.options[event.key - 1].value);
+    } else if (question.answerType === 'choice' && /^[1-4]$/.test(event.key) && question.options[event.key - 1]) submit(question.options[event.key - 1].value);
   });
 }
 
@@ -1249,9 +1485,8 @@ function showSummary() {
   }
   const accuracy = s.asked ? s.correct / s.asked : 0;
   const weak = weakSpots(progress.items, WEAK_SPOT_LIMIT).map(({ id, errors }) => ({ item: itemById(id), errors })).filter((w) => w.item);
-  const dirBar = (label, stat) => h('div', { class: 'bar-row' }, h('span', {}, label),
-    h('div', { class: 'bar' }, h('i', { style: `transform:scaleX(${stat.attempts ? stat.correct / stat.attempts : 0})` })),
-    h('span', {}, stat.attempts ? percent(stat.correct / stat.attempts) : '–'));
+  const bars = masteryBars(progress).map((bar) => h('div', { class: 'bar-row' }, h('span', {}, bar.label),
+    h('div', { class: 'bar' }, h('i', { style: `transform:scaleX(${bar.value})` })), h('span', {}, percent(bar.value))));
   const unlockedNow = progress.completed.includes(s.stage);
   show(h('main', { class: 'screen summary' },
     h('h1', {}, 'SESSION COMPLETE'),
@@ -1261,12 +1496,74 @@ function showSummary() {
       h('div', {}, h('strong', {}, s.correct), h('small', {}, 'Correct')),
       h('div', {}, h('strong', {}, progress.streak), h('small', {}, 'Streak'))),
     unlockedNow && h('p', { class: 'notice' }, `Stage ${s.stage} passed. Stage ${s.stage + 1} is unlocked.`),
-    h('section', {}, dirBar('CW recognition', progress.dirStats.CW), dirBar('CCW recognition', progress.dirStats.CCW)),
+    h('section', {}, bars),
     weak.length > 0 && h('section', {}, h('h2', {}, 'Your weak spots'),
       h('ul', { class: 'weak' }, weak.map((w) => h('li', {}, itemLabel(w.item), h('small', {}, `${w.errors} error${w.errors === 1 ? '' : 's'}`))))),
     h('div', { class: 'answers stack' },
       h('button', { class: 'btn btn-wide', onClick: () => startSession(s.stage) }, 'Train again'),
       h('button', { class: 'btn btn-ghost btn-wide', onClick: () => saveBackup(() => showHome('Backup saved.')) }, 'Save backup'),
+      h('button', { class: 'btn btn-ghost btn-wide', onClick: () => showHome() }, 'Home'))));
+}
+
+/* ---------- Blank Wheel benchmark ---------- */
+
+function showBenchmark() {
+  const { anchor, order } = benchmarkOrder(Math.random);
+  const placed = [anchor];
+  const startedAt = Date.now();
+  let errors = 0;
+  let index = 0;
+  let locked = false;
+  const mount = h('div', { class: 'wheel-mount' });
+  const prompt = h('p', { class: 'prompt' });
+  const status = h('div', { class: 'stat-line' });
+  const wheel = createWheel(mount, { onTap: (n) => {
+    if (locked || placed.includes(n)) return;
+    const target = order[index];
+    const ok = n === target;
+    if (!ok) errors += 1;
+    placed.push(target);
+    index += 1;
+    locked = !ok;
+    wheel.present({ hideNumbers: true, revealed: placed, highlight: [target], wrong: ok ? [] : [n] });
+    if (ok) return draw();
+    setTimeout(() => { locked = false; draw(); }, BENCHMARK_REVEAL_MS);
+  } });
+  wheel.setRotorAngle(randomRotorAngle(Math.random));
+
+  function draw() {
+    if (index >= order.length) return finish();
+    prompt.replaceChildren('Tap the pocket of ', numberChip(order[index]));
+    status.replaceChildren(h('span', {}, `${index} / ${order.length} placed`), h('span', {}, `${errors} error${errors === 1 ? '' : 's'}`),
+      h('button', { class: 'link', onClick: () => showHome() }, 'Quit'));
+    if (!locked) wheel.present({ hideNumbers: true, revealed: placed });
+  }
+
+  function finish() {
+    const result = { at: startedAt, ms: Date.now() - startedAt, errors };
+    commit(recordBenchmark(progress, result));
+    showBenchmarkResult(result);
+  }
+
+  show(h('main', { class: 'screen train' }, status, mount, prompt,
+    h('p', { class: 'hint' }, 'Only the anchor is given. A miss is counted and the right pocket is shown.')));
+  draw();
+}
+
+function showBenchmarkResult(result) {
+  const best = benchmarkBest(progress);
+  const recent = progress.benchmark.slice(-BENCHMARK_TREND_COUNT);
+  const worst = Math.max(1, ...recent.map((r) => r.errors));
+  show(h('main', { class: 'screen summary' }, h('h1', {}, 'BLANK WHEEL'),
+    h('div', { class: 'tiles two' },
+      h('div', {}, h('strong', {}, result.errors), h('small', {}, 'Errors')),
+      h('div', {}, h('strong', {}, formatClock(result.ms)), h('small', {}, 'Time'))),
+    h('p', { class: 'notice' }, `Personal best: ${best.errors} error${best.errors === 1 ? '' : 's'} in ${formatClock(best.ms)}. Mastery needs 2 errors or fewer.`),
+    h('section', {}, h('h2', {}, 'Trend · errors per run'),
+      h('div', { class: 'trend' }, recent.map((r) => h('div', { class: 'trend-col' },
+        h('i', { style: `transform:scaleY(${Math.max(0.04, r.errors / worst)})` }), h('small', {}, r.errors))))),
+    h('div', { class: 'answers stack' },
+      h('button', { class: 'btn btn-wide', onClick: showBenchmark }, 'Run again'),
       h('button', { class: 'btn btn-ghost btn-wide', onClick: () => showHome() }, 'Home'))));
 }
 
@@ -1276,7 +1573,7 @@ function showSettings() {
   const confirmBox = h('div', { class: 'confirm', hidden: true }, h('p', {}, 'Reset all training progress?'),
     h('div', { class: 'answers row' },
       h('button', { class: 'btn btn-ghost', onClick: () => { confirmBox.hidden = true; } }, 'Cancel'),
-      h('button', { class: 'btn btn-danger', onClick: async () => { await clearProgress(); progress = defaultProgress(Date.now()); showHome('Progress reset.'); } }, 'Reset')));
+      h('button', { class: 'btn btn-danger', disabled: storageLocked, onClick: async () => { await clearProgress(); progress = defaultProgress(Date.now()); showHome('Progress reset.'); } }, 'Reset')));
   show(h('main', { class: 'screen settings' }, h('h1', {}, 'Settings'),
     h('button', { class: 'btn btn-ghost btn-wide', onClick: () => { commit({ ...progress, settings: { ...progress.settings, sound: !progress.settings.sound } }); showSettings(); } },
       `Sound: ${progress.settings.sound ? 'ON' : 'OFF'}`),

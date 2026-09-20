@@ -2,6 +2,7 @@
 // Storage I/O lives in storage.js. Nothing here mutates its input.
 
 import { newItemState, review, DAY_MS } from './scheduler.js';
+import { allItems, itemById, DISTANCE_KINDS, SPATIAL_KINDS } from './items.js';
 
 export const SCHEMA_VERSION = 1;
 export const APP_ID = 'roulette-wheel-trainer';
@@ -132,6 +133,46 @@ export function unlockStage(progress, stage) {
 
 export function recordSession(progress, session) {
   return { ...progress, sessions: [...progress.sessions, session].slice(-SESSIONS_KEPT) };
+}
+
+const BENCHMARK_FROM_STAGE = 4;
+const BENCHMARK_MASTERY_ERRORS = 2;
+const BENCHMARKS_KEPT = 100;
+const MASTERED_BOX = 4;
+
+export function benchmarkAvailable(progress) {
+  return progress.unlocked.includes(BENCHMARK_FROM_STAGE);
+}
+
+export function recordBenchmark(progress, result) {
+  return { ...progress, benchmark: [...progress.benchmark, result].slice(-BENCHMARKS_KEPT) };
+}
+
+export function benchmarkBest(progress) {
+  return [...progress.benchmark].sort((a, b) => a.errors - b.errors || a.ms - b.ms)[0] ?? null;
+}
+
+export function level1Mastered(progress) {
+  const best = benchmarkBest(progress);
+  return best !== null && best.errors <= BENCHMARK_MASTERY_ERRORS && progress.completed.includes(STAGE_COUNT);
+}
+
+function kindAccuracy(progress, kindList) {
+  const states = Object.entries(progress.items).filter(([id]) => kindList.includes(itemById(id)?.kind)).map(([, s]) => s);
+  const attempts = states.reduce((sum, s) => sum + s.attempts, 0);
+  return attempts === 0 ? 0 : states.reduce((sum, s) => sum + s.correct, 0) / attempts;
+}
+
+export function masteryBars(progress) {
+  const dirRatio = (stat) => (stat.attempts === 0 ? 0 : stat.correct / stat.attempts);
+  const mastered = Object.values(progress.items).filter((s) => s.box >= MASTERED_BOX).length;
+  return [
+    { label: 'Wheel mastery', value: mastered / allItems().length },
+    { label: 'CW recognition', value: dirRatio(progress.dirStats.CW) },
+    { label: 'CCW recognition', value: dirRatio(progress.dirStats.CCW) },
+    { label: 'Distance', value: kindAccuracy(progress, DISTANCE_KINDS) },
+    { label: 'Spatial recognition', value: kindAccuracy(progress, SPATIAL_KINDS) },
+  ];
 }
 
 export function serialize(progress, now) {

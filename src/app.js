@@ -7,7 +7,9 @@ import { buildQuestion, isCorrectAnswer, randomRotorAngle } from './questions.js
 import {
   defaultProgress, recordAnswer, recordExplored, recordSession, unlockStage, isRecallBlock,
   stageAccuracy, parseImport, backupIsStale, EXPLORE_UNLOCK_COUNT,
+  recordBenchmark, benchmarkBest, benchmarkAvailable, masteryBars,
 } from './progress.js';
+import { benchmarkOrder } from './benchmark.js';
 import { loadProgress, saveProgress, clearProgress, requestDurableStorage, shareBackup } from './storage.js';
 import { createWheel } from './renderer.js';
 import { h, numberChip, renderParts, formatClock, percent, STAGES, PLAYABLE_STAGES } from './ui.js';
@@ -15,6 +17,8 @@ import { h, numberChip, renderParts, formatClock, percent, STAGES, PLAYABLE_STAG
 const SESSION_LENGTHS = [3, 5, 10];
 const CORRECT_PAUSE_MS = 1100;
 const WEAK_SPOT_LIMIT = 5;
+const BENCHMARK_TREND_COUNT = 8;
+const BENCHMARK_REVEAL_MS = 700;
 const root = document.getElementById('app');
 
 let progress = null;
@@ -83,6 +87,16 @@ function stageRow(stage) {
     h('span', { class: 'stage-acc' }, accuracy));
 }
 
+function benchmarkRow() {
+  const open = benchmarkAvailable(progress);
+  const best = benchmarkBest(progress);
+  const note = best ? `Best: ${best.errors} error${best.errors === 1 ? '' : 's'} · ${formatClock(best.ms)}` : 'Place all 37 numbers. Opens with stage 4.';
+  return h('button', { class: 'stage-row benchmark-row', disabled: !open, onClick: showBenchmark },
+    h('span', { class: 'stage-n' }, open ? '◎' : '🔒'),
+    h('span', { class: 'stage-text' }, h('strong', {}, 'Blank Wheel benchmark'), h('small', {}, note)),
+    h('span', { class: 'stage-acc' }, progress.benchmark.length ? `${progress.benchmark.length}×` : ''));
+}
+
 function showHome(message) {
   const lengths = h('div', { class: 'segmented', role: 'group', 'aria-label': 'Session length' },
     SESSION_LENGTHS.map((min) => h('button', { class: progress.settings.sessionMin === min ? 'is-on' : '',
@@ -96,6 +110,7 @@ function showHome(message) {
       importButton('Import progress', 'btn-ghost')),
     h('div', { class: 'stat-line' }, h('span', {}, `${progress.xp} XP`), progress.streak > 1 && h('span', {}, `🔥 STREAK ${progress.streak}`)),
     h('section', { class: 'stage-list' }, STAGES.map(stageRow)),
+    benchmarkRow(),
     h('div', { class: 'home-foot' }, h('span', { class: 'label' }, 'Session'), lengths,
       h('button', { class: 'btn btn-ghost', onClick: showSettings }, 'Settings'))));
 }
@@ -184,7 +199,7 @@ function keypad(question, submit) {
 
 function showQuestion(item, question) {
   const mount = h('div', { class: 'wheel-mount' });
-  const wheel = createWheel(mount, {});
+  const wheel = createWheel(mount, { onTap: (n) => question.answerType === 'tap' && submit(n) });
   wheel.setRotorAngle(randomRotorAngle(Math.random));
   wheel.setView(question.wheel.view, question.wheel.focus);
   wheel.present({ hideNumbers: true, ...question.wheel });
@@ -222,8 +237,24 @@ function showQuestion(item, question) {
   }
 
   let pad = null;
-  if (question.answerType === 'choice') {
-    answers.classList.add(question.options.length === 3 || Array.isArray(question.answer) ? 'stack' : 'grid');
+  if (question.answerType === 'tap') {
+    answers.append(h('p', { class: 'hint' }, 'Tap the wheel.'));
+  } else if (question.answerType === 'multi') {
+    const picked = new Set();
+    const confirm = h('button', { class: 'btn btn-wide', disabled: true, onClick: () => submit([...picked]) }, 'Check');
+    const chips = question.options.map((o) => {
+      const button = h('button', { class: 'btn choice pick', 'aria-pressed': 'false', onClick: () => {
+        if (picked.has(o.value)) picked.delete(o.value); else picked.add(o.value);
+        button.setAttribute('aria-pressed', String(picked.has(o.value)));
+        confirm.disabled = picked.size !== question.answer.length;
+        confirm.textContent = `Check (${picked.size}/${question.answer.length})`;
+      } }, ...renderParts(o.label));
+      return button;
+    });
+    answers.append(h('div', { class: 'pick-grid' }, chips), confirm);
+  } else if (question.answerType === 'choice') {
+    const layout = question.options.length > 4 ? 'grid-4' : question.options.length === 3 || Array.isArray(question.answer) ? 'stack' : 'grid';
+    answers.classList.add(layout);
     answers.append(...question.options.map((o, i) => h('button', { class: 'btn choice', onClick: () => submit(o.value) },
       h('kbd', {}, i + 1), ...renderParts(o.label))));
   } else {
@@ -246,7 +277,7 @@ function showQuestion(item, question) {
       if (/^\d$/.test(event.key)) pad.press(event.key);
       else if (event.key === 'Enter') pad.press('OK');
       else if (event.key === 'Backspace') pad.press('⌫');
-    } else if (/^[1-4]$/.test(event.key) && question.options[event.key - 1]) submit(question.options[event.key - 1].value);
+    } else if (question.answerType === 'choice' && /^[1-4]$/.test(event.key) && question.options[event.key - 1]) submit(question.options[event.key - 1].value);
   });
 }
 
@@ -261,9 +292,8 @@ function showSummary() {
   }
   const accuracy = s.asked ? s.correct / s.asked : 0;
   const weak = weakSpots(progress.items, WEAK_SPOT_LIMIT).map(({ id, errors }) => ({ item: itemById(id), errors })).filter((w) => w.item);
-  const dirBar = (label, stat) => h('div', { class: 'bar-row' }, h('span', {}, label),
-    h('div', { class: 'bar' }, h('i', { style: `transform:scaleX(${stat.attempts ? stat.correct / stat.attempts : 0})` })),
-    h('span', {}, stat.attempts ? percent(stat.correct / stat.attempts) : '–'));
+  const bars = masteryBars(progress).map((bar) => h('div', { class: 'bar-row' }, h('span', {}, bar.label),
+    h('div', { class: 'bar' }, h('i', { style: `transform:scaleX(${bar.value})` })), h('span', {}, percent(bar.value))));
   const unlockedNow = progress.completed.includes(s.stage);
   show(h('main', { class: 'screen summary' },
     h('h1', {}, 'SESSION COMPLETE'),
@@ -273,12 +303,74 @@ function showSummary() {
       h('div', {}, h('strong', {}, s.correct), h('small', {}, 'Correct')),
       h('div', {}, h('strong', {}, progress.streak), h('small', {}, 'Streak'))),
     unlockedNow && h('p', { class: 'notice' }, `Stage ${s.stage} passed. Stage ${s.stage + 1} is unlocked.`),
-    h('section', {}, dirBar('CW recognition', progress.dirStats.CW), dirBar('CCW recognition', progress.dirStats.CCW)),
+    h('section', {}, bars),
     weak.length > 0 && h('section', {}, h('h2', {}, 'Your weak spots'),
       h('ul', { class: 'weak' }, weak.map((w) => h('li', {}, itemLabel(w.item), h('small', {}, `${w.errors} error${w.errors === 1 ? '' : 's'}`))))),
     h('div', { class: 'answers stack' },
       h('button', { class: 'btn btn-wide', onClick: () => startSession(s.stage) }, 'Train again'),
       h('button', { class: 'btn btn-ghost btn-wide', onClick: () => saveBackup(() => showHome('Backup saved.')) }, 'Save backup'),
+      h('button', { class: 'btn btn-ghost btn-wide', onClick: () => showHome() }, 'Home'))));
+}
+
+/* ---------- Blank Wheel benchmark ---------- */
+
+function showBenchmark() {
+  const { anchor, order } = benchmarkOrder(Math.random);
+  const placed = [anchor];
+  const startedAt = Date.now();
+  let errors = 0;
+  let index = 0;
+  let locked = false;
+  const mount = h('div', { class: 'wheel-mount' });
+  const prompt = h('p', { class: 'prompt' });
+  const status = h('div', { class: 'stat-line' });
+  const wheel = createWheel(mount, { onTap: (n) => {
+    if (locked || placed.includes(n)) return;
+    const target = order[index];
+    const ok = n === target;
+    if (!ok) errors += 1;
+    placed.push(target);
+    index += 1;
+    locked = !ok;
+    wheel.present({ hideNumbers: true, revealed: placed, highlight: [target], wrong: ok ? [] : [n] });
+    if (ok) return draw();
+    setTimeout(() => { locked = false; draw(); }, BENCHMARK_REVEAL_MS);
+  } });
+  wheel.setRotorAngle(randomRotorAngle(Math.random));
+
+  function draw() {
+    if (index >= order.length) return finish();
+    prompt.replaceChildren('Tap the pocket of ', numberChip(order[index]));
+    status.replaceChildren(h('span', {}, `${index} / ${order.length} placed`), h('span', {}, `${errors} error${errors === 1 ? '' : 's'}`),
+      h('button', { class: 'link', onClick: () => showHome() }, 'Quit'));
+    if (!locked) wheel.present({ hideNumbers: true, revealed: placed });
+  }
+
+  function finish() {
+    const result = { at: startedAt, ms: Date.now() - startedAt, errors };
+    commit(recordBenchmark(progress, result));
+    showBenchmarkResult(result);
+  }
+
+  show(h('main', { class: 'screen train' }, status, mount, prompt,
+    h('p', { class: 'hint' }, 'Only the anchor is given. A miss is counted and the right pocket is shown.')));
+  draw();
+}
+
+function showBenchmarkResult(result) {
+  const best = benchmarkBest(progress);
+  const recent = progress.benchmark.slice(-BENCHMARK_TREND_COUNT);
+  const worst = Math.max(1, ...recent.map((r) => r.errors));
+  show(h('main', { class: 'screen summary' }, h('h1', {}, 'BLANK WHEEL'),
+    h('div', { class: 'tiles two' },
+      h('div', {}, h('strong', {}, result.errors), h('small', {}, 'Errors')),
+      h('div', {}, h('strong', {}, formatClock(result.ms)), h('small', {}, 'Time'))),
+    h('p', { class: 'notice' }, `Personal best: ${best.errors} error${best.errors === 1 ? '' : 's'} in ${formatClock(best.ms)}. Mastery needs 2 errors or fewer.`),
+    h('section', {}, h('h2', {}, 'Trend · errors per run'),
+      h('div', { class: 'trend' }, recent.map((r) => h('div', { class: 'trend-col' },
+        h('i', { style: `transform:scaleY(${Math.max(0.04, r.errors / worst)})` }), h('small', {}, r.errors))))),
+    h('div', { class: 'answers stack' },
+      h('button', { class: 'btn btn-wide', onClick: showBenchmark }, 'Run again'),
       h('button', { class: 'btn btn-ghost btn-wide', onClick: () => showHome() }, 'Home'))));
 }
 
@@ -288,7 +380,7 @@ function showSettings() {
   const confirmBox = h('div', { class: 'confirm', hidden: true }, h('p', {}, 'Reset all training progress?'),
     h('div', { class: 'answers row' },
       h('button', { class: 'btn btn-ghost', onClick: () => { confirmBox.hidden = true; } }, 'Cancel'),
-      h('button', { class: 'btn btn-danger', onClick: async () => { await clearProgress(); progress = defaultProgress(Date.now()); showHome('Progress reset.'); } }, 'Reset')));
+      h('button', { class: 'btn btn-danger', disabled: storageLocked, onClick: async () => { await clearProgress(); progress = defaultProgress(Date.now()); showHome('Progress reset.'); } }, 'Reset')));
   show(h('main', { class: 'screen settings' }, h('h1', {}, 'Settings'),
     h('button', { class: 'btn btn-ghost btn-wide', onClick: () => { commit({ ...progress, settings: { ...progress.settings, sound: !progress.settings.sound } }); showSettings(); } },
       `Sound: ${progress.settings.sound ? 'ON' : 'OFF'}`),
