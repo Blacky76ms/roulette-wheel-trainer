@@ -121,3 +121,10 @@ button { font: inherit; color: inherit; cursor: pointer; touch-action: manipulat
 .trend-col { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 4px; }
 .trend-col i { display: block; width: 100%; height: 72px; background: var(--accent); border-radius: 4px 4px 0 0; transform-origin: bottom; }
 .trend-col small { font-family: var(--mono); color: var(--muted); }
+
+/* Study cards and sector tabs */
+.run-list { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 6px; }
+.run { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; font-size: 17px; }
+.sector-tabs { align-self: center; max-width: 100%; }
+.sector-tabs button { padding: 0 10px; font-size: 13px; }
+.sector-tabs button:active { background: var(--surface-2); color: var(--text); }

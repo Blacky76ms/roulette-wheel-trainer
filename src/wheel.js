@@ -57,7 +57,7 @@ export function sectorRuns(sectorId) {
   return sector.runs;
 }
 
-function mainSectorOf(value) {
+export function mainSectorOf(value) {
   return MAIN_SECTORS.find((id) => SECTORS[id].numbers.includes(value));
 }
 

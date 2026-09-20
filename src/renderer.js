@@ -58,22 +58,24 @@ export function createWheel(container, { onTap, onRotate }) {
   const marker = svgEl('path', { class: 'marker', d: `M0 ${-R_NUM_OUT + 4}L-7 ${-R_RIM - 4}L7 ${-R_RIM - 4}Z`, visibility: 'hidden' }, stationaryFront);
 
   let rotorAngle = 0;
-  let view = { mode: 'full', focus: 0 };
+  // In arc view the zoom window is fixed in place; the ring slides through it when the rotor turns.
+  let view = { mode: 'full', windowAngle: 0 };
 
   function applyView() {
     if (view.mode === 'full') return svg.setAttribute('viewBox', FULL_VIEW);
-    const [cx, cy] = polar(R_TEXT - 18, pocket(view.focus).angle + rotorAngle);
+    const [cx, cy] = polar(R_TEXT - 18, view.windowAngle);
     svg.setAttribute('viewBox', `${cx - ARC_VIEW_SIZE / 2} ${cy - ARC_VIEW_SIZE / 2} ${ARC_VIEW_SIZE} ${ARC_VIEW_SIZE}`);
   }
 
   function setRotorAngle(angle) {
     rotorAngle = ((angle % 360) + 360) % 360;
     rotor.setAttribute('transform', `rotate(${rotorAngle})`);
-    applyView();
   }
 
-  function setView(mode, focus) {
-    view = { mode, focus: focus ?? view.focus };
+  // atTop: turn the rotor so the focus pocket sits upright at 12 o'clock and zoom in there.
+  function setView(mode, focus, { atTop = false } = {}) {
+    if (atTop && focus !== undefined) setRotorAngle(-pocket(focus).angle);
+    view = { mode, windowAngle: focus === undefined ? view.windowAngle : pocket(focus).angle + rotorAngle };
     svg.classList.toggle('is-arc', mode === 'arc');
     applyView();
   }

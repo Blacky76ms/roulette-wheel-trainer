@@ -1,7 +1,7 @@
 // Items: the catalog of things the scheduler tracks, generated from the wheel model.
 // Catalog order is introduction order: chunk by chunk, never one answer many times in a row.
 
-import { ARCS, SECTORS, MAIN_SECTORS, DIRECTIONS, JUNCTIONS, SEQUENCE, pocket } from './wheel.js';
+import { ARCS, SECTORS, MAIN_SECTORS, DIRECTIONS, JUNCTIONS, SEQUENCE, pocket, arcById, mainSectorOf } from './wheel.js';
 
 const ARROW = { CW: '→', CCW: '←' };
 
@@ -88,6 +88,34 @@ export function stageItems(stage) {
 
 export function itemById(id) {
   return BY_ID.get(id) ?? null;
+}
+
+
+function sectorChunk(sectorId, focus) {
+  const sector = SECTORS[sectorId];
+  return { id: `sector:${sectorId}`, title: sector.name, runs: sector.runs, mark: [], view: 'full', focus };
+}
+
+function arcChunk(arcId, focus) {
+  const arc = arcById(arcId);
+  return { id: `arc:${arcId}`, title: `Arc ${arcId} · ${SECTORS[arc.sector].short}`, runs: [arc.numbers], mark: [], view: 'arc', focus };
+}
+
+// The chunk a learner must have seen before an item is asked. Shown once, as a study card.
+export function studyChunk(item) {
+  switch (item.kind) {
+    case 'sectorMember': return sectorChunk(mainSectorOf(item.n), item.n);
+    case 'sectorEdge': return sectorChunk(item.sector, SECTORS[item.sector].runs[item.run][0]);
+    case 'arcStep': return arcChunk(pocket(item.from).arc, item.from);
+    case 'arcMissing': return arcChunk(item.arc, item.n);
+    case 'arcComplete': return arcChunk(item.arc, arcById(item.arc).numbers[1]);
+    case 'junctionStep': {
+      const [from, to] = item.dir === 'CW' ? [item.from, item.to] : [item.to, item.from];
+      const numbers = [...arcById(pocket(from).arc).numbers, ...arcById(pocket(to).arc).numbers];
+      return { id: `junction:${from}|${to}`, title: `Junction ${from} | ${to}`, runs: [numbers], mark: [from, to], view: 'arc', focus: from };
+    }
+    default: return null;
+  }
 }
 
 export function itemLabel(item) {

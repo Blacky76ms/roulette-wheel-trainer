@@ -1,6 +1,6 @@
 // Offline shell. CACHE is stamped by the build with a content hash, so every release gets a
 // fresh cache and a client never mixes files from two versions.
-const CACHE = 'wheel-trainer-47b3a15a9508';
+const CACHE = 'wheel-trainer-5d018d458605';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon.svg', './icon-180.png', './icon-512.png'];
 
 self.addEventListener('install', (event) => {

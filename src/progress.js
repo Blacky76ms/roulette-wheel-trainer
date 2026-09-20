@@ -31,6 +31,7 @@ export function defaultProgress(now) {
     unlocked: [1],
     completed: [],
     explored: [],
+    introduced: [],
     items: {},
     blocks: {},
     stages: {},
@@ -125,6 +126,15 @@ export function recordExplored(progress, value) {
   if (progress.explored.includes(value)) return progress;
   const next = { ...progress, explored: [...progress.explored, value] };
   return next.explored.length >= EXPLORE_UNLOCK_COUNT ? withUnlock(next, 2) : next;
+}
+
+export function isIntroduced(progress, chunkId) {
+  return progress.introduced.includes(chunkId);
+}
+
+export function markIntroduced(progress, chunkId) {
+  if (isIntroduced(progress, chunkId)) return progress;
+  return { ...progress, introduced: [...progress.introduced, chunkId] };
 }
 
 export function unlockStage(progress, stage) {

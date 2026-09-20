@@ -135,6 +135,13 @@ button { font: inherit; color: inherit; cursor: pointer; touch-action: manipulat
 .trend-col { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 4px; }
 .trend-col i { display: block; width: 100%; height: 72px; background: var(--accent); border-radius: 4px 4px 0 0; transform-origin: bottom; }
 .trend-col small { font-family: var(--mono); color: var(--muted); }
+
+/* Study cards and sector tabs */
+.run-list { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 6px; }
+.run { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; font-size: 17px; }
+.sector-tabs { align-self: center; max-width: 100%; }
+.sector-tabs button { padding: 0 10px; font-size: 13px; }
+.sector-tabs button:active { background: var(--surface-2); color: var(--text); }
 </style>
 </head>
 <body>
@@ -417,6 +424,34 @@ function stageItems(stage) {
 
 function itemById(id) {
   return BY_ID.get(id) ?? null;
+}
+
+
+function sectorChunk(sectorId, focus) {
+  const sector = SECTORS[sectorId];
+  return { id: `sector:${sectorId}`, title: sector.name, runs: sector.runs, mark: [], view: 'full', focus };
+}
+
+function arcChunk(arcId, focus) {
+  const arc = arcById(arcId);
+  return { id: `arc:${arcId}`, title: `Arc ${arcId} · ${SECTORS[arc.sector].short}`, runs: [arc.numbers], mark: [], view: 'arc', focus };
+}
+
+// The chunk a learner must have seen before an item is asked. Shown once, as a study card.
+function studyChunk(item) {
+  switch (item.kind) {
+    case 'sectorMember': return sectorChunk(mainSectorOf(item.n), item.n);
+    case 'sectorEdge': return sectorChunk(item.sector, SECTORS[item.sector].runs[item.run][0]);
+    case 'arcStep': return arcChunk(pocket(item.from).arc, item.from);
+    case 'arcMissing': return arcChunk(item.arc, item.n);
+    case 'arcComplete': return arcChunk(item.arc, arcById(item.arc).numbers[1]);
+    case 'junctionStep': {
+      const [from, to] = item.dir === 'CW' ? [item.from, item.to] : [item.to, item.from];
+      const numbers = [...arcById(pocket(from).arc).numbers, ...arcById(pocket(to).arc).numbers];
+      return { id: `junction:${from}|${to}`, title: `Junction ${from} | ${to}`, runs: [numbers], mark: [from, to], view: 'arc', focus: from };
+    }
+    default: return null;
+  }
 }
 
 function itemLabel(item) {
@@ -737,6 +772,7 @@ function defaultProgress(now) {
     unlocked: [1],
     completed: [],
     explored: [],
+    introduced: [],
     items: {},
     blocks: {},
     stages: {},
@@ -831,6 +867,15 @@ function recordExplored(progress, value) {
   if (progress.explored.includes(value)) return progress;
   const next = { ...progress, explored: [...progress.explored, value] };
   return next.explored.length >= EXPLORE_UNLOCK_COUNT ? withUnlock(next, 2) : next;
+}
+
+function isIntroduced(progress, chunkId) {
+  return progress.introduced.includes(chunkId);
+}
+
+function markIntroduced(progress, chunkId) {
+  if (isIntroduced(progress, chunkId)) return progress;
+  return { ...progress, introduced: [...progress.introduced, chunkId] };
 }
 
 function unlockStage(progress, stage) {
@@ -1076,22 +1121,24 @@ function createWheel(container, { onTap, onRotate }) {
   const marker = svgEl('path', { class: 'marker', d: `M0 ${-R_NUM_OUT + 4}L-7 ${-R_RIM - 4}L7 ${-R_RIM - 4}Z`, visibility: 'hidden' }, stationaryFront);
 
   let rotorAngle = 0;
-  let view = { mode: 'full', focus: 0 };
+  // In arc view the zoom window is fixed in place; the ring slides through it when the rotor turns.
+  let view = { mode: 'full', windowAngle: 0 };
 
   function applyView() {
     if (view.mode === 'full') return svg.setAttribute('viewBox', FULL_VIEW);
-    const [cx, cy] = polar(R_TEXT - 18, pocket(view.focus).angle + rotorAngle);
+    const [cx, cy] = polar(R_TEXT - 18, view.windowAngle);
     svg.setAttribute('viewBox', `${cx - ARC_VIEW_SIZE / 2} ${cy - ARC_VIEW_SIZE / 2} ${ARC_VIEW_SIZE} ${ARC_VIEW_SIZE}`);
   }
 
   function setRotorAngle(angle) {
     rotorAngle = ((angle % 360) + 360) % 360;
     rotor.setAttribute('transform', `rotate(${rotorAngle})`);
-    applyView();
   }
 
-  function setView(mode, focus) {
-    view = { mode, focus: focus ?? view.focus };
+  // atTop: turn the rotor so the focus pocket sits upright at 12 o'clock and zoom in there.
+  function setView(mode, focus, { atTop = false } = {}) {
+    if (atTop && focus !== undefined) setRotorAngle(-pocket(focus).angle);
+    view = { mode, windowAngle: focus === undefined ? view.windowAngle : pocket(focus).angle + rotorAngle };
     svg.classList.toggle('is-arc', mode === 'arc');
     applyView();
   }
@@ -1322,7 +1369,6 @@ function showExplore() {
       selected = n;
       const { ccw, cw } = neighbors(n, 1);
       wheel.present({ highlight: [ccw[0], n, cw[0]] });
-      if (mode === 'arc') wheel.setView('arc', n);
       const p = pocket(n);
       const sector = SECTORS[MAIN_SECTORS.find((id) => p.sectors.includes(id))].name;
       const zero = p.sectors.includes('zerospiel') ? ' · Zero-Spiel' : '';
@@ -1338,11 +1384,18 @@ function showExplore() {
   }
   const toggle = h('button', { class: 'btn btn-ghost', onClick: () => {
     mode = mode === 'full' ? 'arc' : 'full';
-    wheel.setView(mode, selected ?? 0);
+    wheel.setView(mode, selected ?? 0, { atTop: mode === 'arc' });
     toggle.textContent = mode === 'full' ? 'Arc view' : 'Full wheel';
   } }, 'Arc view');
+  const sectorButtons = h('div', { class: 'segmented sector-tabs', role: 'group', 'aria-label': 'Show a sector' },
+    Object.values(SECTORS).map((sector) => h('button', { onClick: () => {
+      wheel.present({ highlight: sector.numbers });
+      if (mode === 'arc') wheel.setView('arc', sector.runs[0][Math.floor(sector.runs[0].length / 2)], { atTop: true });
+      info.replaceChildren(h('strong', { class: 'sector-name' }, `${sector.name} · ${sector.numbers.length}`),
+        h('span', { class: 'run-list' }, sector.runs.map((run) => h('span', { class: 'run' }, run.map(numberChip)))));
+    } }, sector.short)));
   updateCount();
-  show(h('main', { class: 'screen train' }, mount, info, count,
+  show(h('main', { class: 'screen train' }, mount, sectorButtons, info, count,
     h('div', { class: 'answers row' }, toggle,
       h('button', { class: 'btn', onClick: () => { commit(unlockStage(progress, 2)); showHome(); } },
         progress.unlocked.includes(2) ? 'Done' : 'Skip to Sectors'))));
@@ -1362,9 +1415,35 @@ function nextQuestion() {
   const id = pickNext({ ids: stageItems(session.stage).map((i) => i.id), states: progress.items, now: Date.now(),
     queue: session.queue, asked: session.asked, lastId: session.lastId });
   const item = itemById(id);
+  const chunk = studyChunk(item);
+  if (chunk && !isIntroduced(progress, chunk.id)) return showStudyCard(chunk);
   session.queue = session.queue.filter((q) => q.id !== id);
   const question = buildQuestion(item, { recall: isRecallBlock(progress, item.kind), rng: Math.random });
   showQuestion(item, question);
+}
+
+// Teach before testing: the first time a sector, arc or junction comes up, show it in full.
+function showStudyCard(chunk) {
+  const pausedAt = Date.now();
+  const numbers = chunk.runs.flat();
+  const mount = h('div', { class: 'wheel-mount' });
+  const wheel = createWheel(mount, { onRotate: () => {} });
+  wheel.setRotorAngle(randomRotorAngle(Math.random));
+  wheel.setView(chunk.view, chunk.focus);
+  wheel.present({ hideNumbers: true, revealed: numbers, band: numbers, highlight: chunk.mark });
+  const done = () => {
+    session.endsAt += Date.now() - pausedAt;
+    commit(markIntroduced(progress, chunk.id));
+    nextQuestion();
+  };
+  show(h('main', { class: 'screen train' },
+    h('div', { class: 'stat-line' }, h('span', {}, 'STUDY · not scored, clock paused'), h('span', {}, 'Drag to turn')),
+    mount,
+    h('p', { class: 'prompt' }, h('strong', { class: 'sector-name' }, chunk.title),
+      h('small', {}, `${numbers.length} numbers, clockwise. Read them in both directions.`)),
+    h('div', { class: 'run-list' }, chunk.runs.map((run) => h('span', { class: 'run' }, run.map(numberChip)))),
+    h('div', { class: 'answers' }, h('button', { class: 'btn btn-wide', onClick: done }, 'Got it · start questions'))));
+  onKeys((event) => { if (event.key === ' ' || event.key === 'Enter') { event.preventDefault(); done(); } });
 }
 
 function keypad(question, submit) {

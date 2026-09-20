@@ -2,12 +2,12 @@
 
 import { pocket, neighbors, SECTORS, MAIN_SECTORS } from './wheel.js';
 import { pickNext, requeueMissed, weakSpots } from './scheduler.js';
-import { stageItems, itemById, itemLabel } from './items.js';
+import { stageItems, itemById, itemLabel, studyChunk } from './items.js';
 import { buildQuestion, isCorrectAnswer, randomRotorAngle } from './questions.js';
 import {
   defaultProgress, recordAnswer, recordExplored, recordSession, unlockStage, isRecallBlock,
   stageAccuracy, parseImport, backupIsStale, EXPLORE_UNLOCK_COUNT,
-  recordBenchmark, benchmarkBest, benchmarkAvailable, masteryBars,
+  recordBenchmark, benchmarkBest, benchmarkAvailable, masteryBars, isIntroduced, markIntroduced,
 } from './progress.js';
 import { benchmarkOrder } from './benchmark.js';
 import { loadProgress, saveProgress, clearProgress, requestDurableStorage, shareBackup } from './storage.js';
@@ -129,7 +129,6 @@ function showExplore() {
       selected = n;
       const { ccw, cw } = neighbors(n, 1);
       wheel.present({ highlight: [ccw[0], n, cw[0]] });
-      if (mode === 'arc') wheel.setView('arc', n);
       const p = pocket(n);
       const sector = SECTORS[MAIN_SECTORS.find((id) => p.sectors.includes(id))].name;
       const zero = p.sectors.includes('zerospiel') ? ' · Zero-Spiel' : '';
@@ -145,11 +144,18 @@ function showExplore() {
   }
   const toggle = h('button', { class: 'btn btn-ghost', onClick: () => {
     mode = mode === 'full' ? 'arc' : 'full';
-    wheel.setView(mode, selected ?? 0);
+    wheel.setView(mode, selected ?? 0, { atTop: mode === 'arc' });
     toggle.textContent = mode === 'full' ? 'Arc view' : 'Full wheel';
   } }, 'Arc view');
+  const sectorButtons = h('div', { class: 'segmented sector-tabs', role: 'group', 'aria-label': 'Show a sector' },
+    Object.values(SECTORS).map((sector) => h('button', { onClick: () => {
+      wheel.present({ highlight: sector.numbers });
+      if (mode === 'arc') wheel.setView('arc', sector.runs[0][Math.floor(sector.runs[0].length / 2)], { atTop: true });
+      info.replaceChildren(h('strong', { class: 'sector-name' }, `${sector.name} · ${sector.numbers.length}`),
+        h('span', { class: 'run-list' }, sector.runs.map((run) => h('span', { class: 'run' }, run.map(numberChip)))));
+    } }, sector.short)));
   updateCount();
-  show(h('main', { class: 'screen train' }, mount, info, count,
+  show(h('main', { class: 'screen train' }, mount, sectorButtons, info, count,
     h('div', { class: 'answers row' }, toggle,
       h('button', { class: 'btn', onClick: () => { commit(unlockStage(progress, 2)); showHome(); } },
         progress.unlocked.includes(2) ? 'Done' : 'Skip to Sectors'))));
@@ -169,9 +175,35 @@ function nextQuestion() {
   const id = pickNext({ ids: stageItems(session.stage).map((i) => i.id), states: progress.items, now: Date.now(),
     queue: session.queue, asked: session.asked, lastId: session.lastId });
   const item = itemById(id);
+  const chunk = studyChunk(item);
+  if (chunk && !isIntroduced(progress, chunk.id)) return showStudyCard(chunk);
   session.queue = session.queue.filter((q) => q.id !== id);
   const question = buildQuestion(item, { recall: isRecallBlock(progress, item.kind), rng: Math.random });
   showQuestion(item, question);
+}
+
+// Teach before testing: the first time a sector, arc or junction comes up, show it in full.
+function showStudyCard(chunk) {
+  const pausedAt = Date.now();
+  const numbers = chunk.runs.flat();
+  const mount = h('div', { class: 'wheel-mount' });
+  const wheel = createWheel(mount, { onRotate: () => {} });
+  wheel.setRotorAngle(randomRotorAngle(Math.random));
+  wheel.setView(chunk.view, chunk.focus);
+  wheel.present({ hideNumbers: true, revealed: numbers, band: numbers, highlight: chunk.mark });
+  const done = () => {
+    session.endsAt += Date.now() - pausedAt;
+    commit(markIntroduced(progress, chunk.id));
+    nextQuestion();
+  };
+  show(h('main', { class: 'screen train' },
+    h('div', { class: 'stat-line' }, h('span', {}, 'STUDY · not scored, clock paused'), h('span', {}, 'Drag to turn')),
+    mount,
+    h('p', { class: 'prompt' }, h('strong', { class: 'sector-name' }, chunk.title),
+      h('small', {}, `${numbers.length} numbers, clockwise. Read them in both directions.`)),
+    h('div', { class: 'run-list' }, chunk.runs.map((run) => h('span', { class: 'run' }, run.map(numberChip)))),
+    h('div', { class: 'answers' }, h('button', { class: 'btn btn-wide', onClick: done }, 'Got it · start questions'))));
+  onKeys((event) => { if (event.key === ' ' || event.key === 'Enter') { event.preventDefault(); done(); } });
 }
 
 function keypad(question, submit) {
