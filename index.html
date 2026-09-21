@@ -146,6 +146,12 @@ button { font: inherit; color: inherit; cursor: pointer; touch-action: manipulat
 .sector-tabs { align-self: center; max-width: 100%; }
 .sector-tabs button { padding: 0 10px; font-size: 13px; }
 .sector-tabs button:active { background: var(--surface-2); color: var(--text); }
+
+/* M3: reaction time, cue, smaller summary tiles */
+.rt { display: block; font: 13px var(--mono); color: var(--muted); }
+.is-cued .marker { fill: #fff; }
+.is-cued .wheel { box-shadow: inset 0 0 0 2px var(--accent); }
+.summary .tiles.two strong { font-size: 24px; }
 </style>
 </head>
 <body>
@@ -259,6 +265,11 @@ function arcById(id) {
 
 function step(value, n, direction) {
   return SEQUENCE[mod(indexOf(value) + sign(direction) * n)];
+}
+
+// The number under a stationary marker at 12 o'clock, for any rotor angle (degrees, clockwise).
+function pocketAtMarker(rotorAngle) {
+  return SEQUENCE[mod(Math.round(-rotorAngle / POCKET_ANGLE))];
 }
 
 function neighbors(value, n) {
@@ -405,12 +416,25 @@ function positionItems() {
   ]);
 }
 
+function segmentItems() {
+  return SEQUENCE.map((n) => ({ id: `sg:${n}`, kind: 'segment', dir: null, n }));
+}
+
+// dir is the direction the ring turns. Marker reading first, then looking 1 to 4 pockets ahead.
+function rotationItems() {
+  const marker = DIRECTIONS.map((dir) => ({ id: `rm:${dir}`, kind: 'rotMarker', dir, ahead: 0 }));
+  const arrive = [1, 2, 3, 4].flatMap((ahead) => DIRECTIONS.map((dir) => ({ id: `ra:${dir}:${ahead}`, kind: 'rotArrive', dir, ahead })));
+  return [...marker, ...arrive];
+}
+
 const CATALOG = Object.freeze({
   2: Object.freeze([...sectorMemberItems(), ...sectorEdgeItems()]),
   3: Object.freeze(ARCS.flatMap(arcItems)),
   4: Object.freeze([...junctionItems(), ...chainItems()]),
   5: Object.freeze(distanceItems()),
   6: Object.freeze(positionItems()),
+  7: Object.freeze(segmentItems()),
+  8: Object.freeze(rotationItems()),
 });
 
 const DISTANCE_KINDS = Object.freeze(['distStep', 'distCount', 'neighbors']);
@@ -475,6 +499,9 @@ function itemLabel(item) {
     case 'neighbors': return `±4 of ${item.n}`;
     case 'posName': return `Name pocket ${item.n}`;
     case 'posTap': return `Find pocket ${item.n}`;
+    case 'segment': return `Segment around ${item.n}`;
+    case 'rotMarker': return `At the marker · ring ${item.dir}`;
+    case 'rotArrive': return `Arrives in ${item.ahead} · ring ${item.dir}`;
     default: return item.id;
   }
 }
@@ -701,7 +728,76 @@ function positionQuestion(item, { rng }) {
   };
 }
 
+// Stage 7 ladder: exposure shortens, the highlight band disappears, then two numbers are hidden.
+const SEGMENT_LEVELS = Object.freeze([
+  { exposureMs: null, hidden: 1, band: true },
+  { exposureMs: 4000, hidden: 1, band: true },
+  { exposureMs: 2500, hidden: 1, band: false },
+  { exposureMs: 1500, hidden: 2, band: false },
+  { exposureMs: 900, hidden: 2, band: false },
+]);
+
+function segmentQuestion(item, { recall, rng, level = 0 }) {
+  const rung = SEGMENT_LEVELS[Math.min(level, SEGMENT_LEVELS.length - 1)];
+  // With two numbers hidden, keep at least two visible anchors.
+  const length = between(rng, rung.hidden === 2 ? 4 : 3, 5);
+  const start = step(item.n, between(rng, 0, length - 1), 'CCW');
+  const segment = [start, ...walk(start, length - 1, 'CW')];
+  const extra = shuffled(segment.filter((n) => n !== item.n), rng).slice(0, rung.hidden - 1);
+  const hidden = segment.filter((n) => n === item.n || extra.includes(n));
+  const shown = segment.filter((n) => !hidden.includes(n));
+  const base = {
+    exposureMs: rung.exposureMs,
+    prompt: [hidden.length === 1 ? 'Which number is hidden?' : 'Which two numbers are hidden? Clockwise.'],
+    wheel: { view: 'arc', focus: segment[Math.floor(length / 2)], revealed: shown, band: rung.band ? segment : [], unknown: hidden },
+    feedback: { highlight: segment, relation: joined(segment, ' ') },
+  };
+  if (hidden.length === 1) return numberQuestion(base, { answer: hidden[0], exclude: shown, recall, rng });
+  const options = recall ? null : shuffled([hidden, ...sequenceDistractors(hidden, shown[0], rng)], rng)
+    .map((value) => ({ value, label: joined(value, ' ') }));
+  return { ...base, answer: hidden, answerType: recall ? 'sequence' : 'choice', options };
+}
+
+// Stage 8 ladder: seconds per revolution.
+const ROTATION_SECONDS = Object.freeze([6, 5, 4, 3]);
+
+// A ring turning clockwise brings the counter-clockwise neighbors to the marker, and vice versa.
+function rotationAnswer({ atMarker, ahead, rotation }) {
+  return ahead === 0 ? atMarker : step(atMarker, ahead, rotation === 'CW' ? 'CCW' : 'CW');
+}
+
+// The answer depends on the moment of the cue, so the question is completed by resolveLive().
+function rotationQuestion(item, { recall, level = 0 }) {
+  const seconds = ROTATION_SECONDS[Math.min(level, ROTATION_SECONDS.length - 1)];
+  return {
+    answer: null,
+    answerType: recall ? 'keypad' : 'choice',
+    options: null,
+    live: { rotation: item.dir, ahead: item.ahead, secondsPerRev: seconds },
+    prompt: item.ahead === 0
+      ? ['Ring turns ', { dir: item.dir }, ' · on the cue, name the number at the marker']
+      : ['Ring turns ', { dir: item.dir }, ` · on the cue, name the number arriving ${item.ahead} later`],
+    wheel: { view: 'full', focus: 0, revealed: [], band: [], unknown: [] },
+    feedback: { highlight: [], relation: [] },
+  };
+}
+
+function resolveLive(question, atMarker, rng) {
+  const { rotation, ahead } = question.live;
+  const answer = rotationAnswer({ atMarker, ahead, rotation });
+  const path = ahead === 0 ? [atMarker] : [atMarker, ...walk(atMarker, ahead, rotation === 'CW' ? 'CCW' : 'CW')];
+  return {
+    ...question,
+    answer,
+    options: question.answerType === 'choice' ? numberOptions(answer, [], rng) : null,
+    feedback: { highlight: path, relation: ahead === 0 ? ['At the marker: ', { n: answer }] : [{ n: atMarker }, ` then +${ahead}: `, { n: answer }] },
+  };
+}
+
 const BUILDERS = {
+  segment: segmentQuestion,
+  rotMarker: rotationQuestion,
+  rotArrive: rotationQuestion,
   junctionStep: arcStepQuestion,
   chain: chainQuestion,
   distStep: distStepQuestion,
@@ -716,10 +812,10 @@ const BUILDERS = {
   arcComplete: arcCompleteQuestion,
 };
 
-function buildQuestion(item, { recall, rng }) {
+function buildQuestion(item, { recall, rng, level = 0 }) {
   const build = BUILDERS[item.kind];
   if (!build) throw new RangeError(`No question builder for item kind: ${item.kind}`);
-  return { itemId: item.id, kind: item.kind, dir: item.dir, ...build(item, { recall, rng }) };
+  return { itemId: item.id, kind: item.kind, dir: item.dir, ...build(item, { recall, rng, level }) };
 }
 
 function isCorrectAnswer(question, given) {
@@ -753,6 +849,7 @@ const SCHEMA_VERSION = 1;
 const APP_ID = 'roulette-wheel-trainer';
 const STAGE_COUNT = 8;
 const XP_PER_CORRECT = 10;
+const XP_FAST_BONUS = 5;
 const EXPLORE_UNLOCK_COUNT = 15;
 
 const STAGE_WINDOW = 20;
@@ -764,6 +861,13 @@ const BLOCK_RECALL = 0.8;
 const RECENT_KEPT = 40;
 const BACKUP_STALE_DAYS = 7;
 const SESSIONS_KEPT = 200;
+// Stages whose difficulty adapts, with their highest level (see SEGMENT_LEVELS, ROTATION_SECONDS).
+const ADAPTIVE_MAX_LEVEL = { 7: 4, 8: 3 };
+const LEVEL_WINDOW = 10;
+const LEVEL_UP = 0.85;
+const LEVEL_DOWN = 0.7;
+const KIND_LATENCIES_KEPT = 20;
+const FAST_MIN_SAMPLES = 5;
 
 function defaultProgress(now) {
   return {
@@ -783,6 +887,9 @@ function defaultProgress(now) {
     dirStats: { CW: { attempts: 0, correct: 0 }, CCW: { attempts: 0, correct: 0 } },
     benchmark: [],
     sessions: [],
+    levels: {},
+    kindLat: {},
+    rt: { best: null, sum: 0, count: 0 },
     lastBackup: null,
     settings: { sound: false, sessionMin: 5, autoNext: true },
   };
@@ -830,6 +937,32 @@ function isRecallBlock(progress, kind) {
   return progress.blocks[kind]?.recall === true;
 }
 
+// Speed and exposure only tighten while accuracy holds, and ease off when it drops.
+function adaptLevel(state, ok, maxLevel) {
+  const recent = [...state.recent, ok];
+  if (recent.length < LEVEL_WINDOW) return { level: state.level, recent };
+  const accuracy = recent.filter(Boolean).length / recent.length;
+  if (accuracy >= LEVEL_UP) return { level: Math.min(maxLevel, state.level + 1), recent: [] };
+  if (accuracy < LEVEL_DOWN) return { level: Math.max(0, state.level - 1), recent: [] };
+  return { level: state.level, recent: recent.slice(1) };
+}
+
+function stageLevel(progress, stage) {
+  return progress.levels[stage]?.level ?? 0;
+}
+
+function median(list) {
+  const sorted = [...list].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+// "Fast" is relative to the learner's own median for that kind of question.
+function isFastAnswer(progress, item, stage, latencyMs) {
+  const history = progress.kindLat[item.kind] ?? [];
+  return reactionTimeActive(progress, stage) && history.length >= FAST_MIN_SAMPLES && latencyMs < median(history);
+}
+
 function withUnlock(progress, stage) {
   if (stage > STAGE_COUNT || progress.unlocked.includes(stage)) return progress;
   return { ...progress, unlocked: [...progress.unlocked, stage] };
@@ -852,9 +985,23 @@ function recordAnswer(progress, { item, stage, ok, latencyMs, now }) {
     },
   };
   const recent = [...(progress.stages[stage]?.recent ?? []), { ok, dir }].slice(-RECENT_KEPT);
+  const bonus = ok && isFastAnswer(progress, item, stage, latencyMs) ? XP_FAST_BONUS : 0;
+  const maxLevel = ADAPTIVE_MAX_LEVEL[stage];
+  const levels = maxLevel === undefined ? progress.levels
+    : { ...progress.levels, [stage]: adaptLevel(progress.levels[stage] ?? { level: 0, recent: [] }, ok, maxLevel) };
+  const rt = !ok ? progress.rt : {
+    best: progress.rt.best === null ? latencyMs : Math.min(progress.rt.best, latencyMs),
+    sum: progress.rt.sum + latencyMs,
+    count: progress.rt.count + 1,
+  };
+  const kindLat = !ok ? progress.kindLat
+    : { ...progress.kindLat, [item.kind]: [...(progress.kindLat[item.kind] ?? []), latencyMs].slice(-KIND_LATENCIES_KEPT) };
   const next = {
     ...progress,
-    xp: progress.xp + (ok ? XP_PER_CORRECT : 0),
+    levels,
+    rt,
+    kindLat,
+    xp: progress.xp + (ok ? XP_PER_CORRECT + bonus : 0),
     streak,
     bestStreak: Math.max(progress.bestStreak, streak),
     items: { ...progress.items, [item.id]: review(progress.items[item.id] ?? newItemState(), ok, now, latencyMs) },
@@ -1206,10 +1353,10 @@ const STAGES = Object.freeze([
   { n: 4, title: 'Junctions & full ring', note: 'Arc boundaries and chains' },
   { n: 5, title: 'Distance', note: 'Pockets apart, both directions' },
   { n: 6, title: 'Position', note: 'Blank wheel, one anchor' },
-  { n: 7, title: 'Segment recognition', note: 'Coming later' },
-  { n: 8, title: 'Slow rotation', note: 'Coming later' },
+  { n: 7, title: 'Segment recognition', note: 'Short glimpses, hidden numbers' },
+  { n: 8, title: 'Slow rotation', note: 'Read the turning ring at the marker' },
 ]);
-const PLAYABLE_STAGES = Object.freeze([1, 2, 3, 4, 5, 6]);
+const PLAYABLE_STAGES = Object.freeze([1, 2, 3, 4, 5, 6, 7, 8]);
 
 function h(tag, props = {}, ...children) {
   const node = document.createElement(tag);
@@ -1250,8 +1397,46 @@ function formatClock(ms) {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
+function formatSeconds(ms) {
+  return `${(ms / 1000).toFixed(2)} s`;
+}
+
 function percent(ratio) {
   return `${Math.round(ratio * 100)}%`;
+}
+
+// ---- audio.js ----
+// AudioManager: three subtle synthesized tones. Silent unless the sound setting is on.
+
+const TONES = {
+  ok: [{ hz: 660, at: 0, ms: 70 }, { hz: 880, at: 0.08, ms: 90 }],
+  miss: [{ hz: 233, at: 0, ms: 160 }],
+  cue: [{ hz: 520, at: 0, ms: 60 }],
+};
+const TONE_GAIN = 0.06;
+
+let audioContext = null;
+
+function playTone(name, enabled) {
+  if (!enabled) return;
+  try {
+    audioContext ??= new (window.AudioContext ?? window.webkitAudioContext)();
+    if (audioContext.state === 'suspended') audioContext.resume();
+    TONES[name].forEach(({ hz, at, ms }) => {
+      const start = audioContext.currentTime + at;
+      const oscillator = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      oscillator.type = 'sine';
+      oscillator.frequency.value = hz;
+      gain.gain.setValueAtTime(TONE_GAIN, start);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + ms / 1000);
+      oscillator.connect(gain).connect(audioContext.destination);
+      oscillator.start(start);
+      oscillator.stop(start + ms / 1000);
+    });
+  } catch (error) {
+    console.warn('Audio unavailable', error);
+  }
 }
 
 // ---- app.js ----
@@ -1265,6 +1450,8 @@ const MISS_NEXT_GUARD_MS = 1200;
 const WEAK_SPOT_LIMIT = 5;
 const BENCHMARK_TREND_COUNT = 8;
 const BENCHMARK_REVEAL_MS = 700;
+const CUE_DELAY_MIN_MS = 1500;
+const CUE_DELAY_MAX_MS = 4000;
 const root = document.getElementById('app');
 
 let progress = null;
@@ -1349,6 +1536,7 @@ function showHome(message) {
       onClick: () => { commit({ ...progress, settings: { ...progress.settings, sessionMin: min } }); showHome(); } }, `${min} min`)));
   show(h('main', { class: 'screen home' },
     message && h('p', { class: 'notice' }, message),
+    level1Mastered(progress) && h('p', { class: 'notice' }, 'Level 1 mastered: benchmark within 2 errors and slow rotation passed.'),
     storageLocked && h('p', { class: 'notice' }, 'Saved progress comes from a newer app version. It is untouched; nothing will be saved until the app updates.'),
     backupIsStale(progress, Date.now()) && h('div', { class: 'notice' }, 'Last backup is more than 7 days old. ',
       h('button', { class: 'link', onClick: () => saveBackup(() => showHome()) }, 'Save backup')),
@@ -1411,7 +1599,7 @@ function showExplore() {
 
 function startSession(stage) {
   session = { stage, startedAt: Date.now(), endsAt: Date.now() + progress.settings.sessionMin * 60_000,
-    asked: 0, correct: 0, queue: [], lastId: null, latencies: [], misses: {} };
+    asked: 0, correct: 0, queue: [], lastId: null, latencies: [], hitLatencies: [], misses: {} };
   commit({ ...progress, stage });
   nextQuestion();
 }
@@ -1424,7 +1612,7 @@ function nextQuestion() {
   const chunk = studyChunk(item);
   if (chunk && !isIntroduced(progress, chunk.id)) return showStudyCard(chunk);
   session.queue = session.queue.filter((q) => q.id !== id);
-  const question = buildQuestion(item, { recall: isRecallBlock(progress, item.kind), rng: Math.random });
+  const question = buildQuestion(item, { recall: isRecallBlock(progress, item.kind), rng: Math.random, level: stageLevel(progress, session.stage) });
   showQuestion(item, question);
 }
 
@@ -1480,13 +1668,49 @@ function showQuestion(item, question) {
   const wheel = createWheel(mount, { onTap: (n) => question.answerType === 'tap' && submit(n) });
   wheel.setRotorAngle(randomRotorAngle(Math.random));
   wheel.setView(question.wheel.view, question.wheel.focus);
-  wheel.present({ hideNumbers: true, ...question.wheel });
+  wheel.present({ hideNumbers: !question.live, ...question.wheel });
+  wheel.showMarker(Boolean(question.live));
+  let frame = null;
+  let exposureTimer = null;
+  let cueAngle = null;
+  const stopLive = () => { cancelAnimationFrame(frame); clearTimeout(exposureTimer); };
+
+  // Stage 7: the segment is visible only for a moment. R or "Show again" replays the glimpse.
+  function glimpse() {
+    if (!question.exposureMs || answered) return;
+    clearTimeout(exposureTimer);
+    wheel.present({ hideNumbers: true, ...question.wheel });
+    exposureTimer = setTimeout(() => !answered && wheel.present({ hideNumbers: true, ...question.wheel, revealed: [] }), question.exposureMs);
+  }
+
+  // Stage 8: the ring turns under the stationary marker; the cue fixes the answer.
+  function startRotation() {
+    const degPerMs = (360 / (question.live.secondsPerRev * 1000)) * (question.live.rotation === 'CW' ? 1 : -1);
+    const startAngle = wheel.getRotorAngle();
+    const startedAt = performance.now();
+    const cueAt = startedAt + CUE_DELAY_MIN_MS + Math.random() * (CUE_DELAY_MAX_MS - CUE_DELAY_MIN_MS);
+    const turn = (now) => {
+      wheel.setRotorAngle(startAngle + (now - startedAt) * degPerMs);
+      if (cueAngle === null && now >= cueAt) {
+        cueAngle = wheel.getRotorAngle();
+        question = resolveLive(question, pocketAtMarker(cueAngle), Math.random);
+        wheel.present({ hideNumbers: true, revealed: [] });
+        mount.classList.add('is-cued');
+        playTone('cue', progress.settings.sound);
+        shownAt = performance.now();
+        mountAnswers();
+      }
+      frame = requestAnimationFrame(turn);
+    };
+    frame = requestAnimationFrame(turn);
+  }
+
   const clock = h('span', { class: 'clock' });
   const tick = setInterval(() => { clock.textContent = formatClock(session.endsAt - Date.now()); }, 500);
   clock.textContent = formatClock(session.endsAt - Date.now());
   const feedback = h('div', { class: 'feedback', 'aria-live': 'polite' });
   const answers = h('div', { class: 'answers' });
-  const shownAt = performance.now();
+  let shownAt = performance.now();
   let answered = false;
   let nextArmed = false;
   let advanced = false;
@@ -1494,6 +1718,7 @@ function showQuestion(item, question) {
   function advance() {
     if (advanced) return;
     advanced = true;
+    stopLive();
     clearInterval(tick);
     nextQuestion();
   }
@@ -1503,10 +1728,14 @@ function showQuestion(item, question) {
     answered = true;
     const latencyMs = Math.round(performance.now() - shownAt);
     const ok = isCorrectAnswer(question, given);
+    const fast = ok && isFastAnswer(progress, item, session.stage, latencyMs);
+    stopLive();
+    if (cueAngle !== null) wheel.setRotorAngle(cueAngle);
+    playTone(ok ? 'ok' : 'miss', progress.settings.sound);
     session.asked += 1;
     session.lastId = item.id;
     session.latencies.push(latencyMs);
-    if (ok) session.correct += 1;
+    if (ok) { session.correct += 1; session.hitLatencies.push(latencyMs); }
     else {
       session.queue = requeueMissed(session.queue, item.id, session.asked, Math.random);
       session.misses[item.id] = (session.misses[item.id] ?? 0) + 1;
@@ -1515,7 +1744,9 @@ function showQuestion(item, question) {
     const wrongPick = !ok && typeof given === 'number' ? [given] : [];
     wheel.present({ highlight: question.feedback.highlight, wrong: wrongPick, band: question.wheel.band });
     feedback.className = `feedback ${ok ? 'is-ok' : 'is-miss'}`;
-    feedback.replaceChildren(h('strong', {}, ok ? '✓ ' : 'Not quite. Let’s lock this one in. '), ...renderParts(question.feedback.relation));
+    const timing = ok && reactionTimeActive(progress, session.stage)
+      ? h('small', { class: 'rt' }, ` ${formatSeconds(latencyMs)}${fast ? ` · fast +${XP_FAST_BONUS} XP` : ''}`) : null;
+    feedback.replaceChildren(h('strong', {}, ok ? '✓ ' : 'Not quite. Let’s lock this one in. '), ...renderParts(question.feedback.relation), timing);
     const next = h('button', { class: 'btn btn-wide', disabled: !ok, onClick: advance }, 'Next');
     answers.className = 'answers';
     answers.replaceChildren(next);
@@ -1526,6 +1757,8 @@ function showQuestion(item, question) {
   }
 
   let pad = null;
+  function mountAnswers() {
+  answers.replaceChildren();
   if (question.answerType === 'tap') {
     answers.append(h('p', { class: 'hint' }, 'Tap the wheel.'));
   } else if (question.answerType === 'multi') {
@@ -1550,23 +1783,30 @@ function showQuestion(item, question) {
     pad = keypad(question, submit);
     answers.append(pad.node);
   }
+  if (question.exposureMs) answers.append(h('button', { class: 'link', onClick: glimpse }, 'Show again (R)'));
+  }
+  if (!question.live) mountAnswers();
+  else answers.append(h('p', { class: 'hint' }, 'Watch the marker. Wait for the cue.'));
 
   const statParts = () => [clock, h('span', {}, progress.streak > 1 ? `🔥 STREAK ${progress.streak}` : ''), h('span', {}, `${progress.xp} XP`),
-    h('button', { class: 'link', onClick: () => { clearInterval(tick); showSummary(); } }, 'Stop')];
+    h('button', { class: 'link', onClick: () => { stopLive(); clearInterval(tick); showSummary(); } }, 'Stop')];
   const statBar = h('div', { class: 'stat-line' }, statParts());
 
   show(h('main', { class: 'screen train' }, statBar, mount,
     h('p', { class: 'prompt' }, renderParts(question.prompt),
-      question.answerType !== 'choice' && h('small', {}, Array.isArray(question.answer) ? ' · type each number, OK after each' : ' · type the number')),
+      ['keypad', 'sequence'].includes(question.answerType) && h('small', {}, Array.isArray(question.answer) ? ' · type each number, OK after each' : ' · type the number')),
     feedback, answers));
+  if (question.live) startRotation();
+  else glimpse();
 
   onKeys((event) => {
+    if (!answered && (event.key === 'r' || event.key === 'R')) return glimpse();
     if (answered) { if (nextArmed && (event.key === ' ' || event.key === 'Enter')) { event.preventDefault(); advance(); } return; }
     if (pad) {
       if (/^\d$/.test(event.key)) pad.press(event.key);
       else if (event.key === 'Enter') pad.press('OK');
       else if (event.key === 'Backspace') pad.press('⌫');
-    } else if (question.answerType === 'choice' && /^[1-4]$/.test(event.key) && question.options[event.key - 1]) submit(question.options[event.key - 1].value);
+    } else if (question.answerType === 'choice' && question.options && /^[1-4]$/.test(event.key) && question.options[event.key - 1]) submit(question.options[event.key - 1].value);
   });
 }
 
@@ -1591,6 +1831,9 @@ function showSummary() {
       h('div', {}, h('strong', {}, s.asked), h('small', {}, 'Questions')),
       h('div', {}, h('strong', {}, s.correct), h('small', {}, 'Correct')),
       h('div', {}, h('strong', {}, progress.streak), h('small', {}, 'Streak'))),
+    reactionTimeActive(progress, s.stage) && s.hitLatencies.length > 0 && h('div', { class: 'tiles two' },
+      h('div', {}, h('strong', {}, formatSeconds(s.hitLatencies.reduce((a, b) => a + b, 0) / s.hitLatencies.length)), h('small', {}, 'Average reaction')),
+      h('div', {}, h('strong', {}, formatSeconds(Math.min(...s.hitLatencies))), h('small', {}, 'Best reaction'))),
     unlockedNow && h('p', { class: 'notice' }, `Stage ${s.stage} passed. Stage ${s.stage + 1} is unlocked.`),
     h('section', {}, bars),
     weak.length > 0 && h('section', {}, h('h2', {}, 'Your weak spots'),
