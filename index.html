@@ -1746,7 +1746,7 @@ function showQuestion(item, question) {
     feedback.className = `feedback ${ok ? 'is-ok' : 'is-miss'}`;
     const timing = ok && reactionTimeActive(progress, session.stage)
       ? h('small', { class: 'rt' }, ` ${formatSeconds(latencyMs)}${fast ? ` · fast +${XP_FAST_BONUS} XP` : ''}`) : null;
-    feedback.replaceChildren(h('strong', {}, ok ? '✓ ' : 'Not quite. Let’s lock this one in. '), ...renderParts(question.feedback.relation), timing);
+    feedback.replaceChildren(h('strong', {}, ok ? '✓ ' : 'Not quite. Let’s lock this one in. '), ...renderParts(question.feedback.relation), ...(timing ? [timing] : []));
     const next = h('button', { class: 'btn btn-wide', disabled: !ok, onClick: advance }, 'Next');
     answers.className = 'answers';
     answers.replaceChildren(next);
