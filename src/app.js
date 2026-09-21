@@ -1,18 +1,20 @@
 // App: screens and the training loop. All rules live in the pure modules; this file wires them to the DOM.
 
-import { pocket, neighbors, SECTORS, MAIN_SECTORS } from './wheel.js';
+import { pocket, neighbors, pocketAtMarker, SECTORS, MAIN_SECTORS } from './wheel.js';
 import { pickNext, requeueMissed, weakSpots } from './scheduler.js';
 import { stageItems, itemById, itemLabel, studyChunk } from './items.js';
-import { buildQuestion, isCorrectAnswer, randomRotorAngle } from './questions.js';
+import { buildQuestion, isCorrectAnswer, randomRotorAngle, resolveLive } from './questions.js';
 import {
   defaultProgress, recordAnswer, recordExplored, recordSession, unlockStage, isRecallBlock,
   stageAccuracy, parseImport, backupIsStale, EXPLORE_UNLOCK_COUNT,
   recordBenchmark, benchmarkBest, benchmarkAvailable, masteryBars, isIntroduced, markIntroduced,
+  stageLevel, isFastAnswer, reactionTimeActive, level1Mastered, XP_FAST_BONUS,
 } from './progress.js';
 import { benchmarkOrder } from './benchmark.js';
 import { loadProgress, saveProgress, clearProgress, requestDurableStorage, shareBackup } from './storage.js';
 import { createWheel } from './renderer.js';
-import { h, numberChip, renderParts, formatClock, percent, STAGES, PLAYABLE_STAGES } from './ui.js';
+import { h, numberChip, renderParts, formatClock, formatSeconds, percent, STAGES, PLAYABLE_STAGES } from './ui.js';
+import { playTone } from './audio.js';
 
 const SESSION_LENGTHS = [3, 5, 10];
 const CORRECT_PAUSE_MS = 2200;
@@ -21,6 +23,8 @@ const MISS_NEXT_GUARD_MS = 1200;
 const WEAK_SPOT_LIMIT = 5;
 const BENCHMARK_TREND_COUNT = 8;
 const BENCHMARK_REVEAL_MS = 700;
+const CUE_DELAY_MIN_MS = 1500;
+const CUE_DELAY_MAX_MS = 4000;
 const root = document.getElementById('app');
 
 let progress = null;
@@ -105,6 +109,7 @@ function showHome(message) {
       onClick: () => { commit({ ...progress, settings: { ...progress.settings, sessionMin: min } }); showHome(); } }, `${min} min`)));
   show(h('main', { class: 'screen home' },
     message && h('p', { class: 'notice' }, message),
+    level1Mastered(progress) && h('p', { class: 'notice' }, 'Level 1 mastered: benchmark within 2 errors and slow rotation passed.'),
     storageLocked && h('p', { class: 'notice' }, 'Saved progress comes from a newer app version. It is untouched; nothing will be saved until the app updates.'),
     backupIsStale(progress, Date.now()) && h('div', { class: 'notice' }, 'Last backup is more than 7 days old. ',
       h('button', { class: 'link', onClick: () => saveBackup(() => showHome()) }, 'Save backup')),
@@ -167,7 +172,7 @@ function showExplore() {
 
 function startSession(stage) {
   session = { stage, startedAt: Date.now(), endsAt: Date.now() + progress.settings.sessionMin * 60_000,
-    asked: 0, correct: 0, queue: [], lastId: null, latencies: [], misses: {} };
+    asked: 0, correct: 0, queue: [], lastId: null, latencies: [], hitLatencies: [], misses: {} };
   commit({ ...progress, stage });
   nextQuestion();
 }
@@ -180,7 +185,7 @@ function nextQuestion() {
   const chunk = studyChunk(item);
   if (chunk && !isIntroduced(progress, chunk.id)) return showStudyCard(chunk);
   session.queue = session.queue.filter((q) => q.id !== id);
-  const question = buildQuestion(item, { recall: isRecallBlock(progress, item.kind), rng: Math.random });
+  const question = buildQuestion(item, { recall: isRecallBlock(progress, item.kind), rng: Math.random, level: stageLevel(progress, session.stage) });
   showQuestion(item, question);
 }
 
@@ -236,13 +241,49 @@ function showQuestion(item, question) {
   const wheel = createWheel(mount, { onTap: (n) => question.answerType === 'tap' && submit(n) });
   wheel.setRotorAngle(randomRotorAngle(Math.random));
   wheel.setView(question.wheel.view, question.wheel.focus);
-  wheel.present({ hideNumbers: true, ...question.wheel });
+  wheel.present({ hideNumbers: !question.live, ...question.wheel });
+  wheel.showMarker(Boolean(question.live));
+  let frame = null;
+  let exposureTimer = null;
+  let cueAngle = null;
+  const stopLive = () => { cancelAnimationFrame(frame); clearTimeout(exposureTimer); };
+
+  // Stage 7: the segment is visible only for a moment. R or "Show again" replays the glimpse.
+  function glimpse() {
+    if (!question.exposureMs || answered) return;
+    clearTimeout(exposureTimer);
+    wheel.present({ hideNumbers: true, ...question.wheel });
+    exposureTimer = setTimeout(() => !answered && wheel.present({ hideNumbers: true, ...question.wheel, revealed: [] }), question.exposureMs);
+  }
+
+  // Stage 8: the ring turns under the stationary marker; the cue fixes the answer.
+  function startRotation() {
+    const degPerMs = (360 / (question.live.secondsPerRev * 1000)) * (question.live.rotation === 'CW' ? 1 : -1);
+    const startAngle = wheel.getRotorAngle();
+    const startedAt = performance.now();
+    const cueAt = startedAt + CUE_DELAY_MIN_MS + Math.random() * (CUE_DELAY_MAX_MS - CUE_DELAY_MIN_MS);
+    const turn = (now) => {
+      wheel.setRotorAngle(startAngle + (now - startedAt) * degPerMs);
+      if (cueAngle === null && now >= cueAt) {
+        cueAngle = wheel.getRotorAngle();
+        question = resolveLive(question, pocketAtMarker(cueAngle), Math.random);
+        wheel.present({ hideNumbers: true, revealed: [] });
+        mount.classList.add('is-cued');
+        playTone('cue', progress.settings.sound);
+        shownAt = performance.now();
+        mountAnswers();
+      }
+      frame = requestAnimationFrame(turn);
+    };
+    frame = requestAnimationFrame(turn);
+  }
+
   const clock = h('span', { class: 'clock' });
   const tick = setInterval(() => { clock.textContent = formatClock(session.endsAt - Date.now()); }, 500);
   clock.textContent = formatClock(session.endsAt - Date.now());
   const feedback = h('div', { class: 'feedback', 'aria-live': 'polite' });
   const answers = h('div', { class: 'answers' });
-  const shownAt = performance.now();
+  let shownAt = performance.now();
   let answered = false;
   let nextArmed = false;
   let advanced = false;
@@ -250,6 +291,7 @@ function showQuestion(item, question) {
   function advance() {
     if (advanced) return;
     advanced = true;
+    stopLive();
     clearInterval(tick);
     nextQuestion();
   }
@@ -259,10 +301,14 @@ function showQuestion(item, question) {
     answered = true;
     const latencyMs = Math.round(performance.now() - shownAt);
     const ok = isCorrectAnswer(question, given);
+    const fast = ok && isFastAnswer(progress, item, session.stage, latencyMs);
+    stopLive();
+    if (cueAngle !== null) wheel.setRotorAngle(cueAngle);
+    playTone(ok ? 'ok' : 'miss', progress.settings.sound);
     session.asked += 1;
     session.lastId = item.id;
     session.latencies.push(latencyMs);
-    if (ok) session.correct += 1;
+    if (ok) { session.correct += 1; session.hitLatencies.push(latencyMs); }
     else {
       session.queue = requeueMissed(session.queue, item.id, session.asked, Math.random);
       session.misses[item.id] = (session.misses[item.id] ?? 0) + 1;
@@ -271,7 +317,9 @@ function showQuestion(item, question) {
     const wrongPick = !ok && typeof given === 'number' ? [given] : [];
     wheel.present({ highlight: question.feedback.highlight, wrong: wrongPick, band: question.wheel.band });
     feedback.className = `feedback ${ok ? 'is-ok' : 'is-miss'}`;
-    feedback.replaceChildren(h('strong', {}, ok ? '✓ ' : 'Not quite. Let’s lock this one in. '), ...renderParts(question.feedback.relation));
+    const timing = ok && reactionTimeActive(progress, session.stage)
+      ? h('small', { class: 'rt' }, ` ${formatSeconds(latencyMs)}${fast ? ` · fast +${XP_FAST_BONUS} XP` : ''}`) : null;
+    feedback.replaceChildren(h('strong', {}, ok ? '✓ ' : 'Not quite. Let’s lock this one in. '), ...renderParts(question.feedback.relation), ...(timing ? [timing] : []));
     const next = h('button', { class: 'btn btn-wide', disabled: !ok, onClick: advance }, 'Next');
     answers.className = 'answers';
     answers.replaceChildren(next);
@@ -282,6 +330,8 @@ function showQuestion(item, question) {
   }
 
   let pad = null;
+  function mountAnswers() {
+  answers.replaceChildren();
   if (question.answerType === 'tap') {
     answers.append(h('p', { class: 'hint' }, 'Tap the wheel.'));
   } else if (question.answerType === 'multi') {
@@ -306,23 +356,30 @@ function showQuestion(item, question) {
     pad = keypad(question, submit);
     answers.append(pad.node);
   }
+  if (question.exposureMs) answers.append(h('button', { class: 'link', onClick: glimpse }, 'Show again (R)'));
+  }
+  if (!question.live) mountAnswers();
+  else answers.append(h('p', { class: 'hint' }, 'Watch the marker. Wait for the cue.'));
 
   const statParts = () => [clock, h('span', {}, progress.streak > 1 ? `🔥 STREAK ${progress.streak}` : ''), h('span', {}, `${progress.xp} XP`),
-    h('button', { class: 'link', onClick: () => { clearInterval(tick); showSummary(); } }, 'Stop')];
+    h('button', { class: 'link', onClick: () => { stopLive(); clearInterval(tick); showSummary(); } }, 'Stop')];
   const statBar = h('div', { class: 'stat-line' }, statParts());
 
   show(h('main', { class: 'screen train' }, statBar, mount,
     h('p', { class: 'prompt' }, renderParts(question.prompt),
-      question.answerType !== 'choice' && h('small', {}, Array.isArray(question.answer) ? ' · type each number, OK after each' : ' · type the number')),
+      ['keypad', 'sequence'].includes(question.answerType) && h('small', {}, Array.isArray(question.answer) ? ' · type each number, OK after each' : ' · type the number')),
     feedback, answers));
+  if (question.live) startRotation();
+  else glimpse();
 
   onKeys((event) => {
+    if (!answered && (event.key === 'r' || event.key === 'R')) return glimpse();
     if (answered) { if (nextArmed && (event.key === ' ' || event.key === 'Enter')) { event.preventDefault(); advance(); } return; }
     if (pad) {
       if (/^\d$/.test(event.key)) pad.press(event.key);
       else if (event.key === 'Enter') pad.press('OK');
       else if (event.key === 'Backspace') pad.press('⌫');
-    } else if (question.answerType === 'choice' && /^[1-4]$/.test(event.key) && question.options[event.key - 1]) submit(question.options[event.key - 1].value);
+    } else if (question.answerType === 'choice' && question.options && /^[1-4]$/.test(event.key) && question.options[event.key - 1]) submit(question.options[event.key - 1].value);
   });
 }
 
@@ -347,6 +404,9 @@ function showSummary() {
       h('div', {}, h('strong', {}, s.asked), h('small', {}, 'Questions')),
       h('div', {}, h('strong', {}, s.correct), h('small', {}, 'Correct')),
       h('div', {}, h('strong', {}, progress.streak), h('small', {}, 'Streak'))),
+    reactionTimeActive(progress, s.stage) && s.hitLatencies.length > 0 && h('div', { class: 'tiles two' },
+      h('div', {}, h('strong', {}, formatSeconds(s.hitLatencies.reduce((a, b) => a + b, 0) / s.hitLatencies.length)), h('small', {}, 'Average reaction')),
+      h('div', {}, h('strong', {}, formatSeconds(Math.min(...s.hitLatencies))), h('small', {}, 'Best reaction'))),
     unlockedNow && h('p', { class: 'notice' }, `Stage ${s.stage} passed. Stage ${s.stage + 1} is unlocked.`),
     h('section', {}, bars),
     weak.length > 0 && h('section', {}, h('h2', {}, 'Your weak spots'),

@@ -65,12 +65,25 @@ function positionItems() {
   ]);
 }
 
+function segmentItems() {
+  return SEQUENCE.map((n) => ({ id: `sg:${n}`, kind: 'segment', dir: null, n }));
+}
+
+// dir is the direction the ring turns. Marker reading first, then looking 1 to 4 pockets ahead.
+function rotationItems() {
+  const marker = DIRECTIONS.map((dir) => ({ id: `rm:${dir}`, kind: 'rotMarker', dir, ahead: 0 }));
+  const arrive = [1, 2, 3, 4].flatMap((ahead) => DIRECTIONS.map((dir) => ({ id: `ra:${dir}:${ahead}`, kind: 'rotArrive', dir, ahead })));
+  return [...marker, ...arrive];
+}
+
 const CATALOG = Object.freeze({
   2: Object.freeze([...sectorMemberItems(), ...sectorEdgeItems()]),
   3: Object.freeze(ARCS.flatMap(arcItems)),
   4: Object.freeze([...junctionItems(), ...chainItems()]),
   5: Object.freeze(distanceItems()),
   6: Object.freeze(positionItems()),
+  7: Object.freeze(segmentItems()),
+  8: Object.freeze(rotationItems()),
 });
 
 export const DISTANCE_KINDS = Object.freeze(['distStep', 'distCount', 'neighbors']);
@@ -135,6 +148,9 @@ export function itemLabel(item) {
     case 'neighbors': return `±4 of ${item.n}`;
     case 'posName': return `Name pocket ${item.n}`;
     case 'posTap': return `Find pocket ${item.n}`;
+    case 'segment': return `Segment around ${item.n}`;
+    case 'rotMarker': return `At the marker · ring ${item.dir}`;
+    case 'rotArrive': return `Arrives in ${item.ahead} · ring ${item.dir}`;
     default: return item.id;
   }
 }

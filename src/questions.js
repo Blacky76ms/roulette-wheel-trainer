@@ -222,7 +222,76 @@ function positionQuestion(item, { rng }) {
   };
 }
 
+// Stage 7 ladder: exposure shortens, the highlight band disappears, then two numbers are hidden.
+export const SEGMENT_LEVELS = Object.freeze([
+  { exposureMs: null, hidden: 1, band: true },
+  { exposureMs: 4000, hidden: 1, band: true },
+  { exposureMs: 2500, hidden: 1, band: false },
+  { exposureMs: 1500, hidden: 2, band: false },
+  { exposureMs: 900, hidden: 2, band: false },
+]);
+
+function segmentQuestion(item, { recall, rng, level = 0 }) {
+  const rung = SEGMENT_LEVELS[Math.min(level, SEGMENT_LEVELS.length - 1)];
+  // With two numbers hidden, keep at least two visible anchors.
+  const length = between(rng, rung.hidden === 2 ? 4 : 3, 5);
+  const start = step(item.n, between(rng, 0, length - 1), 'CCW');
+  const segment = [start, ...walk(start, length - 1, 'CW')];
+  const extra = shuffled(segment.filter((n) => n !== item.n), rng).slice(0, rung.hidden - 1);
+  const hidden = segment.filter((n) => n === item.n || extra.includes(n));
+  const shown = segment.filter((n) => !hidden.includes(n));
+  const base = {
+    exposureMs: rung.exposureMs,
+    prompt: [hidden.length === 1 ? 'Which number is hidden?' : 'Which two numbers are hidden? Clockwise.'],
+    wheel: { view: 'arc', focus: segment[Math.floor(length / 2)], revealed: shown, band: rung.band ? segment : [], unknown: hidden },
+    feedback: { highlight: segment, relation: joined(segment, ' ') },
+  };
+  if (hidden.length === 1) return numberQuestion(base, { answer: hidden[0], exclude: shown, recall, rng });
+  const options = recall ? null : shuffled([hidden, ...sequenceDistractors(hidden, shown[0], rng)], rng)
+    .map((value) => ({ value, label: joined(value, ' ') }));
+  return { ...base, answer: hidden, answerType: recall ? 'sequence' : 'choice', options };
+}
+
+// Stage 8 ladder: seconds per revolution.
+export const ROTATION_SECONDS = Object.freeze([6, 5, 4, 3]);
+
+// A ring turning clockwise brings the counter-clockwise neighbors to the marker, and vice versa.
+export function rotationAnswer({ atMarker, ahead, rotation }) {
+  return ahead === 0 ? atMarker : step(atMarker, ahead, rotation === 'CW' ? 'CCW' : 'CW');
+}
+
+// The answer depends on the moment of the cue, so the question is completed by resolveLive().
+function rotationQuestion(item, { recall, level = 0 }) {
+  const seconds = ROTATION_SECONDS[Math.min(level, ROTATION_SECONDS.length - 1)];
+  return {
+    answer: null,
+    answerType: recall ? 'keypad' : 'choice',
+    options: null,
+    live: { rotation: item.dir, ahead: item.ahead, secondsPerRev: seconds },
+    prompt: item.ahead === 0
+      ? ['Ring turns ', { dir: item.dir }, ' · on the cue, name the number at the marker']
+      : ['Ring turns ', { dir: item.dir }, ` · on the cue, name the number arriving ${item.ahead} later`],
+    wheel: { view: 'full', focus: 0, revealed: [], band: [], unknown: [] },
+    feedback: { highlight: [], relation: [] },
+  };
+}
+
+export function resolveLive(question, atMarker, rng) {
+  const { rotation, ahead } = question.live;
+  const answer = rotationAnswer({ atMarker, ahead, rotation });
+  const path = ahead === 0 ? [atMarker] : [atMarker, ...walk(atMarker, ahead, rotation === 'CW' ? 'CCW' : 'CW')];
+  return {
+    ...question,
+    answer,
+    options: question.answerType === 'choice' ? numberOptions(answer, [], rng) : null,
+    feedback: { highlight: path, relation: ahead === 0 ? ['At the marker: ', { n: answer }] : [{ n: atMarker }, ` then +${ahead}: `, { n: answer }] },
+  };
+}
+
 const BUILDERS = {
+  segment: segmentQuestion,
+  rotMarker: rotationQuestion,
+  rotArrive: rotationQuestion,
   junctionStep: arcStepQuestion,
   chain: chainQuestion,
   distStep: distStepQuestion,
@@ -237,10 +306,10 @@ const BUILDERS = {
   arcComplete: arcCompleteQuestion,
 };
 
-export function buildQuestion(item, { recall, rng }) {
+export function buildQuestion(item, { recall, rng, level = 0 }) {
   const build = BUILDERS[item.kind];
   if (!build) throw new RangeError(`No question builder for item kind: ${item.kind}`);
-  return { itemId: item.id, kind: item.kind, dir: item.dir, ...build(item, { recall, rng }) };
+  return { itemId: item.id, kind: item.kind, dir: item.dir, ...build(item, { recall, rng, level }) };
 }
 
 export function isCorrectAnswer(question, given) {

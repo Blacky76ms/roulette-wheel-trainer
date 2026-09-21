@@ -105,6 +105,11 @@ export function step(value, n, direction) {
   return SEQUENCE[mod(indexOf(value) + sign(direction) * n)];
 }
 
+// The number under a stationary marker at 12 o'clock, for any rotor angle (degrees, clockwise).
+export function pocketAtMarker(rotorAngle) {
+  return SEQUENCE[mod(Math.round(-rotorAngle / POCKET_ANGLE))];
+}
+
 export function neighbors(value, n) {
   const cw = Array.from({ length: n }, (_, i) => step(value, i + 1, 'CW'));
   const ccw = Array.from({ length: n }, (_, i) => step(value, n - i, 'CCW'));

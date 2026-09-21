@@ -23,7 +23,7 @@ Educational visual-memory trainer. No gambling functionality of any kind; color 
 ## Milestones
 - **M1 (built):** wheel+renderer, Stages 1–3, scheduler, persistence/export/import, PWA shell, XP/streak, settings.
 - **M2 (built 2026-09-20):** Stages 4–6, Blank Wheel benchmark + history, mastery bars; page is network-first, assets cache-first.
-- **M3:** Stages 7–8, reaction-time display + fast bonus, sound, R-repeat, polish.
+- **M3 (built 2026-09-21):** Stage 7 (exposure ladder none/4/2.5/1.5/0.9 s, band off from level 2, two hidden from level 3), Stage 8 (ring turns under the stationary marker, random cue 1.5-4 s, 6/5/4/3 s per rev), adaptive level +1 at 85%/10, -1 below 70%; reaction time shown only when active, +5 XP under own median; sine tones; R / Show again.
 
 ## Success / kill
 - Success: all 19 acceptance criteria; benchmark errors trend down over 2 weeks of 5-min sessions.

@@ -9,10 +9,10 @@ export const STAGES = Object.freeze([
   { n: 4, title: 'Junctions & full ring', note: 'Arc boundaries and chains' },
   { n: 5, title: 'Distance', note: 'Pockets apart, both directions' },
   { n: 6, title: 'Position', note: 'Blank wheel, one anchor' },
-  { n: 7, title: 'Segment recognition', note: 'Coming later' },
-  { n: 8, title: 'Slow rotation', note: 'Coming later' },
+  { n: 7, title: 'Segment recognition', note: 'Short glimpses, hidden numbers' },
+  { n: 8, title: 'Slow rotation', note: 'Read the turning ring at the marker' },
 ]);
-export const PLAYABLE_STAGES = Object.freeze([1, 2, 3, 4, 5, 6]);
+export const PLAYABLE_STAGES = Object.freeze([1, 2, 3, 4, 5, 6, 7, 8]);
 
 export function h(tag, props = {}, ...children) {
   const node = document.createElement(tag);
@@ -51,6 +51,10 @@ export function renderParts(parts) {
 export function formatClock(ms) {
   const total = Math.max(0, Math.ceil(ms / 1000));
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
+export function formatSeconds(ms) {
+  return `${(ms / 1000).toFixed(2)} s`;
 }
 
 export function percent(ratio) {
